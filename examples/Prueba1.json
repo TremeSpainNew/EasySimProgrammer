@@ -1,0 +1,17 @@
+[
+    {
+        "kind": "BUTTON",
+        "pin": 0,
+        "name": "Prueba",
+        "value1": 0.0,
+        "value2": 1.0,
+        "min_in": 0,
+        "max_in": 4095,
+        "min_out": 0.0,
+        "max_out": 100.0,
+        "smooth": 0.1,
+        "send_mode": "CONTINUO",
+        "interval": 200,
+        "as_integer": true
+    }
+]
