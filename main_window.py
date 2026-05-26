@@ -11,6 +11,7 @@ from storage import save_devices, load_devices
 from commands.command_builder import build_all_commands
 from connection_manager import ConnectionManager
 from models.device import Device
+from modbus.modbus_widget import ModbusWidget
 
 
 class MainWindow(QMainWindow):
@@ -26,7 +27,6 @@ class MainWindow(QMainWindow):
 
         self.devices = []
 
-        # DUMP parser
         self.dump_active = False
         self.dump_devices = {}
 
@@ -43,14 +43,10 @@ class MainWindow(QMainWindow):
 
         for kind, title in self.kind_titles:
             table = QTableWidget()
-            table.setColumnCount(6)
+            table.setColumnCount(7)
             table.setHorizontalHeaderLabels([
-                "Pin",
-                "Nombre",
-                "Valor 1",
-                "Valor 2",
-                "Modo",
-                "Opciones"
+                "Pin", "Nombre", "Valor 1", "Valor 2",
+                "Modo", "Opciones", "Acción"
             ])
             table.horizontalHeader().setStretchLastSection(True)
             table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -58,6 +54,8 @@ class MainWindow(QMainWindow):
 
             self.tables[kind] = table
             self.tabs.addTab(table, title)
+        self.modbus_widget = ModbusWidget(self.connection)
+        self.tabs.addTab(self.modbus_widget, "Modbus")
 
         self.log = QTextEdit()
         self.log.setReadOnly(True)
@@ -175,6 +173,73 @@ class MainWindow(QMainWindow):
         self.log.append(text)
 
     # ==========================================================
+    # CONFIRMACIONES / BORRADO REAL
+    # ==========================================================
+
+    def confirm_delete_device(self, device):
+        title = "Confirmar eliminación"
+
+        if device.kind == "SELECTOR":
+            message = (
+                f"Vas a eliminar este contacto del selector:\n\n"
+                f"Selector: {device.name}\n"
+                f"Pin: {device.pin}\n"
+                f"Valor: {device.value1:g}\n\n"
+                f"¿Quieres continuar?"
+            )
+        else:
+            message = (
+                f"Vas a eliminar este elemento:\n\n"
+                f"Tipo: {device.kind}\n"
+                f"Nombre: {device.name}\n"
+                f"Pin: {device.pin}\n\n"
+                f"¿Quieres continuar?"
+            )
+
+        reply = QMessageBox.question(
+            self,
+            title,
+            message,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        return reply == QMessageBox.Yes
+
+    def build_delete_command(self, device):
+        if device.kind == "SELECTOR":
+            return f"SEL.DELPIN {device.pin}"
+
+        return f"#DELETEPIN {device.pin}"
+
+    def send_delete_command(self, device):
+        command = self.build_delete_command(device)
+
+        self.connection.send_command("#CONFIG")
+        self.connection.send_command(command)
+        self.connection.send_command("#SAVE")
+        self.connection.send_command("#END")
+
+        self.add_log(f"🗑️ Borrado enviado: {command}")
+
+    def confirm_replace_from_dump(self):
+        if not self.devices:
+            return True
+
+        reply = QMessageBox.question(
+            self,
+            "Importar configuración",
+            (
+                "El #DUMP recibido sustituirá la configuración actual de las tablas.\n\n"
+                "¿Quieres continuar?"
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        return reply == QMessageBox.Yes
+
+    # ==========================================================
     # DUMP PARSER
     # ==========================================================
 
@@ -187,6 +252,12 @@ class MainWindow(QMainWindow):
         line = text.strip()
 
         if line == "BEGIN CONFIG":
+            if not self.confirm_replace_from_dump():
+                self.dump_active = False
+                self.dump_devices = {}
+                self.add_log("Importación cancelada por el usuario.")
+                return
+
             self.dump_active = True
             self.dump_devices = {}
             self.add_log("Leyendo configuración del dispositivo...")
@@ -378,10 +449,16 @@ class MainWindow(QMainWindow):
         wizard = DeviceWizard(self.connection, self.devices, self)
 
         if wizard.exec():
-            device = wizard.get_device()
-            self.devices.append(device)
+            devices = wizard.get_devices()
+
+            if not devices:
+                return
+
+            self.devices.extend(devices)
             self.refresh_tables()
-            self.add_log(f"Añadido {device.kind}: pin={device.pin}, name={device.name}")
+
+            for device in devices:
+                self.add_log(f"Añadido {device.kind}: pin={device.pin}, name={device.name}")
 
     def refresh_tables(self):
         for table in self.tables.values():
@@ -403,6 +480,19 @@ class MainWindow(QMainWindow):
             table.setItem(row, 4, QTableWidgetItem(device.send_mode))
             table.setItem(row, 5, QTableWidgetItem(self.describe_options(device)))
 
+            btn_delete = QPushButton("✖")
+            btn_delete.setToolTip("Eliminar este elemento")
+            btn_delete.setStyleSheet(
+                "background-color: #c0392b;"
+                "color: white;"
+                "border-radius: 4px;"
+                "padding: 2px;"
+                "font-weight: bold;"
+            )
+            btn_delete.clicked.connect(lambda _, d=device: self.delete_device(d))
+
+            table.setCellWidget(row, 6, btn_delete)
+
     def describe_options(self, device):
         if device.kind == "POT":
             return (
@@ -413,7 +503,7 @@ class MainWindow(QMainWindow):
             )
 
         if device.kind == "SELECTOR":
-            return f"Posición selector = {device.value1}"
+            return f"Posición selector = {device.value1:g}"
 
         return ""
 
@@ -436,10 +526,30 @@ class MainWindow(QMainWindow):
             return
 
         device = filtered[row]
-        self.devices.remove(device)
 
+        if not self.confirm_delete_device(device):
+            return
+
+        self.send_delete_command(device)
+
+        self.devices.remove(device)
         self.refresh_tables()
-        self.add_log(f"Eliminado {device.kind}: {device.name}")
+
+        self.add_log(f"Eliminado {device.kind}: {device.name} (pin {device.pin})")
+
+    def delete_device(self, device):
+        if device not in self.devices:
+            return
+
+        if not self.confirm_delete_device(device):
+            return
+
+        self.send_delete_command(device)
+
+        self.devices.remove(device)
+        self.refresh_tables()
+
+        self.add_log(f"Eliminado {device.kind}: {device.name} (pin {device.pin})")
 
     # ==========================================================
     # FILES / COMMANDS
@@ -484,21 +594,21 @@ class MainWindow(QMainWindow):
 
     def send_commands(self):
         commands = build_all_commands(self.devices)
-    
+
         if not commands:
             self.add_log("No hay comandos para enviar.")
             return
-    
+
         self.add_log("Enviando configuración...")
-    
+
         self.connection.send_command("#CONFIG")
-    
+
         for command in commands:
             self.connection.send_command(command)
-    
+
         self.connection.send_command("#SAVE")
         self.connection.send_command("#END")
-    
+
         self.add_log("Configuración enviada.")
 
     def closeEvent(self, event):
