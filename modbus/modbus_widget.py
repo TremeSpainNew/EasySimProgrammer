@@ -17,8 +17,10 @@ class ModbusWidget(QWidget):
         self.connection = connection
         self.capture_active = False
         self.lines = []
+
         self.devices = []
         self.tags = []
+        self.selected_dev_id = None
 
         self.btn_add = QPushButton("Añadir")
         self.btn_delete = QPushButton("Eliminar")
@@ -50,7 +52,6 @@ class ModbusWidget(QWidget):
 
         self.get_edit = QLineEdit()
         self.get_edit.setPlaceholderText("Nombre tag para MB.READ")
-
         self.btn_get = QPushButton("MB.READ")
 
         self.set_name_edit = QLineEdit()
@@ -58,7 +59,6 @@ class ModbusWidget(QWidget):
 
         self.set_value_edit = QLineEdit()
         self.set_value_edit.setPlaceholderText("Valor/es: 1 o 10 20 30")
-
         self.btn_set = QPushButton("MB.SET")
 
         tag_control = QGroupBox("Lectura / Escritura")
@@ -74,7 +74,6 @@ class ModbusWidget(QWidget):
         self.command_edit.setPlaceholderText(
             "Comando manual: MB.ADDDEV..., MODBUS.ADD..., MB.SET..."
         )
-
         self.btn_send_manual = QPushButton("Enviar")
 
         manual_row = QHBoxLayout()
@@ -99,7 +98,7 @@ class ModbusWidget(QWidget):
         devices_layout.addWidget(self.devices_table)
         devices_box.setLayout(devices_layout)
 
-        tags_box = QGroupBox("Variables / Tags")
+        tags_box = QGroupBox("Variables / Tags del esclavo seleccionado")
         tags_layout = QVBoxLayout()
         tags_layout.addWidget(self.tags_table)
         tags_box.setLayout(tags_layout)
@@ -115,7 +114,6 @@ class ModbusWidget(QWidget):
         layout.addWidget(tag_control)
         layout.addLayout(manual_row)
         layout.addWidget(self.status)
-
         self.setLayout(layout)
 
         self.btn_add.clicked.connect(self.add_with_wizard)
@@ -131,6 +129,7 @@ class ModbusWidget(QWidget):
         self.btn_set.clicked.connect(self.send_set)
         self.btn_send_manual.clicked.connect(self.send_manual)
 
+        self.devices_table.itemSelectionChanged.connect(self.on_device_selection_changed)
         self.connection.received.connect(self.on_received)
 
     def add_with_wizard(self):
@@ -142,17 +141,50 @@ class ModbusWidget(QWidget):
             if wizard.mode() == "DEVICE":
                 device = wizard.get_device()
                 self.devices.append(device)
+                self.selected_dev_id = device.dev_id
                 self.refresh_devices_table()
+                self.select_device_by_id(device.dev_id)
             else:
                 tag = wizard.get_tag()
                 self.tags.append(tag)
+
+                if self.selected_dev_id is None:
+                    self.selected_dev_id = tag.dev_id
+                    self.select_device_by_id(tag.dev_id)
+
                 self.refresh_tags_table()
 
             self.connection.send_command(command)
             self.connection.send_command("MB.SAVE")
             self.status.setText(f"Enviado: {command}")
 
+    def on_device_selection_changed(self):
+        row = self.devices_table.currentRow()
+
+        if row < 0 or row >= len(self.devices):
+            self.selected_dev_id = None
+        else:
+            self.selected_dev_id = self.devices[row].dev_id
+
+        self.refresh_tags_table()
+
+    def select_device_by_id(self, dev_id):
+        for row, dev in enumerate(self.devices):
+            if dev.dev_id == dev_id:
+                self.devices_table.selectRow(row)
+                return
+
+    def get_visible_tags(self):
+        if self.selected_dev_id is None:
+            return self.tags
+
+        return [
+            tag for tag in self.tags
+            if tag.dev_id == self.selected_dev_id
+        ]
+
     def refresh_devices_table(self):
+        self.devices_table.blockSignals(True)
         self.devices_table.setRowCount(0)
 
         for dev in self.devices:
@@ -167,10 +199,17 @@ class ModbusWidget(QWidget):
             self.devices_table.setItem(row, 5, QTableWidgetItem(str(dev.unit)))
             self.devices_table.setItem(row, 6, QTableWidgetItem(str(dev.period)))
 
+        self.devices_table.blockSignals(False)
+
+        if self.selected_dev_id is not None:
+            self.select_device_by_id(self.selected_dev_id)
+
     def refresh_tags_table(self):
         self.tags_table.setRowCount(0)
 
-        for tag in self.tags:
+        visible_tags = self.get_visible_tags()
+
+        for tag in visible_tags:
             row = self.tags_table.rowCount()
             self.tags_table.insertRow(row)
 
@@ -189,7 +228,7 @@ class ModbusWidget(QWidget):
         dev_row = self.devices_table.currentRow()
 
         if tag_row >= 0 and self.tags_table.hasFocus():
-            self.delete_tag(tag_row)
+            self.delete_visible_tag(tag_row)
             return
 
         if dev_row >= 0 and self.devices_table.hasFocus():
@@ -197,7 +236,7 @@ class ModbusWidget(QWidget):
             return
 
         if tag_row >= 0:
-            self.delete_tag(tag_row)
+            self.delete_visible_tag(tag_row)
             return
 
         if dev_row >= 0:
@@ -236,10 +275,28 @@ class ModbusWidget(QWidget):
         self.devices.pop(row)
         self.tags = [t for t in self.tags if t.dev_id != dev.dev_id]
 
+        if self.selected_dev_id == dev.dev_id:
+            self.selected_dev_id = None
+
         self.refresh_devices_table()
         self.refresh_tags_table()
 
         self.status.setText(f"Eliminado esclavo: {dev.name}")
+
+    def delete_visible_tag(self, row):
+        visible_tags = self.get_visible_tags()
+
+        if row < 0 or row >= len(visible_tags):
+            return
+
+        tag = visible_tags[row]
+
+        try:
+            real_row = self.tags.index(tag)
+        except ValueError:
+            return
+
+        self.delete_tag(real_row)
 
     def delete_tag(self, row):
         if row < 0 or row >= len(self.tags):
@@ -277,6 +334,14 @@ class ModbusWidget(QWidget):
         name = self.get_edit.text().strip()
 
         if not name:
+            row = self.tags_table.currentRow()
+            visible_tags = self.get_visible_tags()
+
+            if 0 <= row < len(visible_tags):
+                name = visible_tags[row].name
+                self.get_edit.setText(name)
+
+        if not name:
             QMessageBox.warning(self, "MB.READ", "Introduce el nombre del tag.")
             return
 
@@ -286,6 +351,14 @@ class ModbusWidget(QWidget):
     def send_set(self):
         name = self.set_name_edit.text().strip()
         value = self.set_value_edit.text().strip()
+
+        if not name:
+            row = self.tags_table.currentRow()
+            visible_tags = self.get_visible_tags()
+
+            if 0 <= row < len(visible_tags):
+                name = visible_tags[row].name
+                self.set_name_edit.setText(name)
 
         if not name:
             QMessageBox.warning(self, "MB.SET", "Introduce el nombre del tag.")
@@ -321,6 +394,7 @@ class ModbusWidget(QWidget):
         self.connection.send_command("MB.CLEAR")
         self.devices = []
         self.tags = []
+        self.selected_dev_id = None
         self.refresh_devices_table()
         self.refresh_tags_table()
         self.status.setText("Enviado: MB.CLEAR")
@@ -348,13 +422,20 @@ class ModbusWidget(QWidget):
             self.lines = []
             self.devices = []
             self.tags = []
+            self.selected_dev_id = None
             self.status.setText("Leyendo Modbus...")
             return
 
         if line == "END MB":
             self.capture_active = False
             self.refresh_devices_table()
+
+            if self.devices and self.selected_dev_id is None:
+                self.selected_dev_id = self.devices[0].dev_id
+                self.select_device_by_id(self.selected_dev_id)
+
             self.refresh_tags_table()
+
             self.status.setText(
                 f"Modbus leído: {len(self.devices)} esclavos, {len(self.tags)} tags"
             )
@@ -392,34 +473,43 @@ class ModbusWidget(QWidget):
             return
 
     def parse_device_line(self, line: str):
-        # Firmware actual:
-        # MB.DEV <id> <ip> <unit>
         parts = line.split()
 
-        if len(parts) < 4:
-            return
-
         try:
-            dev_id = int(parts[1])
-            ip = parts[2]
-            unit = int(parts[3])
+            if len(parts) >= 6 and parts[2].upper() == "TCP":
+                dev_id = int(parts[1])
 
-            dev = ModbusDevice(
-                dev_id=dev_id,
-                name=f"DEV{dev_id}",
-                ip=ip,
-                port=502,
-                unit=unit,
-                period=0,
-                bus="TCP",
-            )
+                dev = ModbusDevice(
+                    dev_id=dev_id,
+                    name=f"DEV{dev_id}",
+                    bus="TCP",
+                    ip=parts[3],
+                    port=int(parts[4]),
+                    unit=int(parts[5]),
+                    period=0,
+                )
+                self.devices.append(dev)
+                return
 
-            self.devices.append(dev)
+            if len(parts) >= 4 and parts[2].upper() == "RTU":
+                dev_id = int(parts[1])
+
+                dev = ModbusDevice(
+                    dev_id=dev_id,
+                    name=f"DEV{dev_id}",
+                    bus="RTU",
+                    ip="0.0.0.0",
+                    port=0,
+                    unit=int(parts[3]),
+                    period=0,
+                )
+                self.devices.append(dev)
+                return
+
         except Exception:
             pass
 
     def parse_tag_line(self, line: str):
-        # MB.TAG <OUT|IN> <devId> <func> <addr> <qty> <name> <period> <scale> <offset>
         parts = line.split()
 
         if len(parts) < 10:
@@ -440,3 +530,30 @@ class ModbusWidget(QWidget):
             self.tags.append(tag)
         except Exception:
             pass
+
+    def build_all_commands(self):
+        commands = []
+
+        for dev in self.devices:
+            if dev.bus.upper() == "TCP":
+                commands.append(
+                    f"MB.ADDDEV {dev.dev_id} TCP {dev.ip} {dev.port} {dev.unit}"
+                )
+            elif dev.bus.upper() == "RTU":
+                commands.append(
+                    f"MB.ADDDEV {dev.dev_id} RTU {dev.unit}"
+                )
+
+        for tag in self.tags:
+            if tag.direction.upper() == "OUT":
+                commands.append(
+                    f"MB.ADDOUT {tag.dev_id} {tag.func} {tag.addr} {tag.qty} "
+                    f"{tag.name} {tag.period} {tag.scale:g} {tag.offset:g}"
+                )
+            else:
+                commands.append(
+                    f"MB.ADDIN {tag.dev_id} {tag.func} {tag.addr} {tag.qty} "
+                    f"{tag.name} {tag.period} {tag.scale:g} {tag.offset:g}"
+                )
+
+        return commands

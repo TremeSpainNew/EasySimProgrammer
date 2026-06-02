@@ -34,7 +34,7 @@ class ModbusDevicePage(QWizardPage):
     def __init__(self):
         super().__init__()
         self.setTitle("Esclavo Modbus")
-        self.setSubTitle("Crea un nuevo esclavo TCP.")
+        self.setSubTitle("Crea un nuevo esclavo TCP o RTU.")
 
         self.dev_id = QSpinBox()
         self.dev_id.setRange(0, 250)
@@ -42,12 +42,24 @@ class ModbusDevicePage(QWizardPage):
         self.name = QLineEdit()
         self.name.setPlaceholderText("Nombre visual, ej: PLC1")
 
+        self.bus = QComboBox()
+        self.bus.addItems(["TCP", "RTU"])
+        self.bus.currentTextChanged.connect(self.update_bus)
+
         self.ip = QLineEdit()
         self.ip.setText("192.168.1.50")
+
+        self.port = QSpinBox()
+        self.port.setRange(0, 65535)
+        self.port.setValue(502)
 
         self.unit = QSpinBox()
         self.unit.setRange(1, 247)
         self.unit.setValue(1)
+
+        self.period = QSpinBox()
+        self.period.setRange(0, 60000)
+        self.period.setValue(100)
 
         self.warning = QLabel("")
         self.warning.setStyleSheet("color: #d9534f; font-weight: bold;")
@@ -55,21 +67,53 @@ class ModbusDevicePage(QWizardPage):
         self.name.textChanged.connect(lambda _: self.completeChanged.emit())
         self.ip.textChanged.connect(lambda _: self.completeChanged.emit())
 
-        form = QFormLayout()
-        form.addRow("ID:", self.dev_id)
-        form.addRow("Nombre:", self.name)
-        form.addRow("IP:", self.ip)
-        form.addRow("Unit ID:", self.unit)
-        form.addRow("", self.warning)
+        self.form = QFormLayout()
+        self.form.addRow("ID:", self.dev_id)
+        self.form.addRow("Nombre:", self.name)
+        self.form.addRow("Bus:", self.bus)
+        self.form.addRow("IP:", self.ip)
+        self.form.addRow("Puerto:", self.port)
+        self.form.addRow("Unit ID:", self.unit)
+        self.form.addRow("Periodo ms:", self.period)
+        self.form.addRow("", self.warning)
 
-        self.setLayout(form)
+        self.setLayout(self.form)
+        self.update_bus(self.bus.currentText())
+
+    def update_bus(self, bus):
+        tcp = bus == "TCP"
+
+        self.ip.setVisible(tcp)
+        self.port.setVisible(tcp)
+
+        for i in range(self.form.rowCount()):
+            label_item = self.form.itemAt(i, QFormLayout.LabelRole)
+            field_item = self.form.itemAt(i, QFormLayout.FieldRole)
+
+            if not label_item or not field_item:
+                continue
+
+            label = label_item.widget()
+            field = field_item.widget()
+
+            if field in (self.ip, self.port):
+                label.setVisible(tcp)
+
+        if bus == "RTU":
+            self.ip.setText("0.0.0.0")
+            self.port.setValue(0)
+        else:
+            if self.ip.text().strip() == "0.0.0.0":
+                self.ip.setText("192.168.1.50")
+            if self.port.value() == 0:
+                self.port.setValue(502)
 
     def isComplete(self):
         if not self.name.text().strip():
             self.warning.setText("Introduce un nombre.")
             return False
 
-        if not self.ip.text().strip():
+        if self.bus.currentText() == "TCP" and not self.ip.text().strip():
             self.warning.setText("Introduce una IP.")
             return False
 
@@ -196,7 +240,7 @@ class ModbusWizard(QWizard):
         super().__init__(parent)
 
         self.setWindowTitle("Asistente Modbus")
-        self.resize(540, 360)
+        self.resize(540, 390)
         self.setWizardStyle(QWizard.ModernStyle)
 
         self.setStyleSheet("""
@@ -241,10 +285,10 @@ class ModbusWizard(QWizard):
             dev_id=p.dev_id.value(),
             name=p.name.text().strip(),
             ip=p.ip.text().strip(),
-            port=502,
+            port=p.port.value(),
             unit=p.unit.value(),
-            period=0,
-            bus="TCP",
+            period=p.period.value(),
+            bus=p.bus.currentText(),
         )
 
     def get_tag(self):
@@ -266,15 +310,16 @@ class ModbusWizard(QWizard):
         if self.mode() == "DEVICE":
             d = self.get_device()
 
-            # Firmware actual:
-            # MB.ADDDEV <id> <ip> <unit>
-            return f"MB.ADDDEV {d.dev_id} {d.ip} {d.unit}"
+            if d.bus == "RTU":
+                return f"MB.ADDDEV {d.dev_id} RTU {d.unit}"
+
+            return f"MB.ADDDEV {d.dev_id} TCP {d.ip} {d.port} {d.unit}"
 
         t = self.get_tag()
 
-        # Firmware actual:
-        # MODBUS.ADD <name> <devId> <HREG|IREG|COIL|ISTS> <addr> <qty> [scale] [offset]
+        cmd = "MB.ADDOUT" if t.direction == "OUT" else "MB.ADDIN"
+
         return (
-            f"MODBUS.ADD {t.name} {t.dev_id} {t.func} "
-            f"{t.addr} {t.qty} {t.scale:.3f} {t.offset:.3f}"
+            f"{cmd} {t.dev_id} {t.func} {t.addr} {t.qty} "
+            f"{t.name} {t.period} {t.scale:.3f} {t.offset:.3f}"
         )

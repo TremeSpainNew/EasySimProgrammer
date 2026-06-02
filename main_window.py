@@ -78,7 +78,7 @@ class MainWindow(QMainWindow):
         self.btn_dump.clicked.connect(self.request_dump)
 
         self.sim_check = QCheckBox("Simulación")
-        self.sim_check.setChecked(True)
+        self.sim_check.setChecked(False)
         self.sim_check.stateChanged.connect(self.on_simulation_changed)
 
         self.connection_type = QComboBox()
@@ -217,7 +217,6 @@ class MainWindow(QMainWindow):
 
         self.connection.send_command("#CONFIG")
         self.connection.send_command(command)
-        self.connection.send_command("#SAVE")
         self.connection.send_command("#END")
 
         self.add_log(f"🗑️ Borrado enviado: {command}")
@@ -593,23 +592,37 @@ class MainWindow(QMainWindow):
         self.add_log("------------------")
 
     def send_commands(self):
-        commands = build_all_commands(self.devices)
+        normal_commands = build_all_commands(self.devices)
 
-        if not commands:
+        modbus_commands = []
+        if hasattr(self, "modbus_widget"):
+            modbus_commands = self.modbus_widget.build_all_commands()
+
+        if not normal_commands and not modbus_commands:
             self.add_log("No hay comandos para enviar.")
             return
 
-        self.add_log("Enviando configuración...")
+        self.add_log("Enviando configuración completa...")
 
         self.connection.send_command("#CONFIG")
 
-        for command in commands:
+        for command in normal_commands:
             self.connection.send_command(command)
 
         self.connection.send_command("#SAVE")
+
+        # Modbus: limpiar siempre antes de reenviar
+        if hasattr(self, "modbus_widget"):
+            self.connection.send_command("MB.CLEAR")
+
+            for command in modbus_commands:
+                self.connection.send_command(command)
+
+            self.connection.send_command("MB.SAVE")
+
         self.connection.send_command("#END")
 
-        self.add_log("Configuración enviada.")
+        self.add_log("Configuración completa enviada.")
 
     def closeEvent(self, event):
         self.connection.disconnect()
