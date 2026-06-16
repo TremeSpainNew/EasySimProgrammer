@@ -1,0 +1,16 @@
+{
+  "name": "ASFA Digital",
+  "description": "Módulo base ASFA Digital con pulsadores y LEDs.",
+  "devices": [
+    { "kind": "BUTTON", "name": "ASFA_EFICACIA", "pin": 0, "value1": 1, "value2": 0 },
+    { "kind": "BUTTON", "name": "ASFA_REARME", "pin": 1, "value1": 1, "value2": 0 },
+    { "kind": "BUTTON", "name": "ASFA_REBASE", "pin": 2, "value1": 1, "value2": 0 },
+    { "kind": "BUTTON", "name": "ASFA_AUMENTO", "pin": 3, "value1": 1, "value2": 0 },
+    { "kind": "BUTTON", "name": "ASFA_OCULTACION", "pin": 4, "value1": 1, "value2": 0 },
+
+    { "kind": "OUTPUT", "name": "ASFA_LED_VERDE", "pin": 10, "value1": 0, "value2": 1 },
+    { "kind": "OUTPUT", "name": "ASFA_LED_ROJO", "pin": 11, "value1": 0, "value2": 1 },
+    { "kind": "OUTPUT", "name": "ASFA_LED_AMARILLO", "pin": 12, "value1": 0, "value2": 1 },
+    { "kind": "OUTPUT", "name": "ASFA_LED_AZUL", "pin": 13, "value1": 0, "value2": 1 }
+  ]
+}

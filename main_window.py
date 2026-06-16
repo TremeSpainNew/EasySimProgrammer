@@ -12,7 +12,9 @@ from commands.command_builder import build_all_commands
 from connection_manager import ConnectionManager
 from models.device import Device
 from modbus.modbus_widget import ModbusWidget
-
+from module_wizard import ModuleWizard
+from manual_console import ManualConsole
+from widgets.serial_port_combobox import SerialPortComboBox
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -62,20 +64,24 @@ class MainWindow(QMainWindow):
         self.log.setMinimumHeight(120)
 
         self.btn_add = QPushButton("Añadir con asistente")
+        self.btn_add_module = QPushButton("Añadir módulo IO")
         self.btn_delete = QPushButton("Eliminar seleccionado")
         self.btn_save = QPushButton("Guardar JSON")
         self.btn_load = QPushButton("Cargar JSON")
         self.btn_generate = QPushButton("Generar comandos")
         self.btn_send = QPushButton("Enviar comandos")
         self.btn_dump = QPushButton("#DUMP")
+        self.btn_manual = QPushButton("Consola manual")
 
         self.btn_add.clicked.connect(self.add_device)
+        self.btn_add_module.clicked.connect(self.open_module_wizard)
         self.btn_delete.clicked.connect(self.delete_selected)
         self.btn_save.clicked.connect(self.save_json)
         self.btn_load.clicked.connect(self.load_json)
         self.btn_generate.clicked.connect(self.generate_commands)
         self.btn_send.clicked.connect(self.send_commands)
         self.btn_dump.clicked.connect(self.request_dump)
+        self.btn_manual.clicked.connect(self.open_console)
 
         self.sim_check = QCheckBox("Simulación")
         self.sim_check.setChecked(False)
@@ -84,6 +90,9 @@ class MainWindow(QMainWindow):
         self.connection_type = QComboBox()
         self.connection_type.addItems(["TCP", "Serial"])
         self.connection_type.setFixedWidth(80)
+        self.connection_type.currentTextChanged.connect(
+            self.on_connection_type_changed
+        )
 
         self.ip_edit = QLineEdit()
         self.ip_edit.setPlaceholderText("IP dispositivo")
@@ -95,10 +104,8 @@ class MainWindow(QMainWindow):
         self.port_spin.setValue(5000)
         self.port_spin.setFixedWidth(90)
 
-        self.serial_port_edit = QLineEdit()
-        self.serial_port_edit.setPlaceholderText("COM3")
-        self.serial_port_edit.setText("COM3")
-        self.serial_port_edit.setFixedWidth(90)
+        self.serial_port_edit = SerialPortComboBox()
+        self.serial_port_edit.setFixedWidth(140)
 
         self.baud_spin = QSpinBox()
         self.baud_spin.setRange(1200, 1000000)
@@ -117,13 +124,21 @@ class MainWindow(QMainWindow):
         connection_row.setSpacing(8)
         connection_row.addWidget(self.sim_check)
         connection_row.addWidget(self.connection_type)
-        connection_row.addWidget(QLabel("IP:"))
+        self.lbl_ip = QLabel("IP:")
+        self.lbl_port = QLabel("Puerto:")
+        self.lbl_serial = QLabel("Serial:")
+        self.lbl_baud = QLabel("Baud:")
+
+        connection_row.addWidget(self.lbl_ip)
         connection_row.addWidget(self.ip_edit)
-        connection_row.addWidget(QLabel("Puerto:"))
+
+        connection_row.addWidget(self.lbl_port)
         connection_row.addWidget(self.port_spin)
-        connection_row.addWidget(QLabel("Serial:"))
+
+        connection_row.addWidget(self.lbl_serial)
         connection_row.addWidget(self.serial_port_edit)
-        connection_row.addWidget(QLabel("Baud:"))
+
+        connection_row.addWidget(self.lbl_baud)
         connection_row.addWidget(self.baud_spin)
         connection_row.addWidget(self.btn_connect)
         connection_row.addWidget(self.btn_disconnect)
@@ -134,7 +149,9 @@ class MainWindow(QMainWindow):
         button_row.setContentsMargins(0, 0, 0, 0)
         button_row.setSpacing(8)
         button_row.addWidget(self.btn_add)
+        button_row.addWidget(self.btn_add_module)
         button_row.addWidget(self.btn_delete)
+        button_row.addWidget(self.btn_manual)
         button_row.addStretch()
         button_row.addWidget(self.btn_dump)
         button_row.addWidget(self.btn_load)
@@ -167,6 +184,9 @@ class MainWindow(QMainWindow):
 
         root = QWidget()
         root.setLayout(layout)
+        self.on_connection_type_changed(
+            self.connection_type.currentText()
+        )
         self.setCentralWidget(root)
 
     def add_log(self, text):
@@ -403,6 +423,21 @@ class MainWindow(QMainWindow):
     # ==========================================================
     # CONNECTION
     # ==========================================================
+    def on_connection_type_changed(self, mode):
+        is_tcp = mode == "TCP"
+
+        self.lbl_ip.setVisible(is_tcp)
+        self.ip_edit.setVisible(is_tcp)
+
+        self.lbl_port.setVisible(is_tcp)
+        self.port_spin.setVisible(is_tcp)
+
+        self.lbl_serial.setVisible(not is_tcp)
+        self.serial_port_edit.setVisible(not is_tcp)
+
+        self.lbl_baud.setVisible(not is_tcp)
+        self.baud_spin.setVisible(not is_tcp)
+
 
     def on_simulation_changed(self):
         self.connection.set_simulation(self.sim_check.isChecked())
@@ -425,7 +460,7 @@ class MainWindow(QMainWindow):
             self.connection.connect_tcp(ip, port)
 
         else:
-            port_name = self.serial_port_edit.text().strip()
+            port_name = self.serial_port_edit.currentPort()
             baud = self.baud_spin.value()
 
             if not port_name:
@@ -623,6 +658,28 @@ class MainWindow(QMainWindow):
         self.connection.send_command("#END")
 
         self.add_log("Configuración completa enviada.")
+    
+    def open_module_wizard(self):
+        wizard = ModuleWizard(devices=self.devices, parent=self)
+    
+        if wizard.exec():
+            devices = wizard.get_devices()
+    
+            if not devices:
+                return
+    
+            self.devices.extend(devices)
+            self.refresh_tables()
+    
+            for device in devices:
+                self.add_log(
+                    f"Añadido desde módulo {device.kind}: "
+                    f"pin={device.pin}, name={device.name}"
+                )
+    
+    def open_console(self):
+        dlg = ManualConsole(self.connection, self)
+        dlg.exec()
 
     def closeEvent(self, event):
         self.connection.disconnect()
