@@ -25,6 +25,29 @@ class ConnectionManager(QObject):
 
         self._rx_thread = None
         self._rx_running = False
+        
+    def normalize_kind(self, kind: str) -> str:
+        kind = kind.upper()
+
+        mapping = {
+            "BOTON": "BUTTON",
+            "BOTÓN": "BUTTON",
+            "BUTTON": "BUTTON",
+
+            "INTERRUPTOR": "SWITCH",
+            "SWITCH": "SWITCH",
+
+            "SALIDA DIGITAL": "OUTPUT",
+            "OUTPUT": "OUTPUT",
+
+            "POTENCIOMETRO": "POT",
+            "POTENCIÓMETRO": "POT",
+            "POT": "POT",
+
+            "SELECTOR": "SELECTOR",
+        }
+
+        return mapping.get(kind, kind)
 
     def set_simulation(self, enabled: bool):
         self.disconnect()
@@ -151,20 +174,20 @@ class ConnectionManager(QObject):
     def _parse_line(self, line: str):
         if not line.startswith("IO.STATE"):
             return
-
+    
         parts = line.split()
-
+    
         if len(parts) < 4:
             return
-
+    
         try:
             pin = int(parts[1])
-            kind = parts[2].upper()
+            kind = self.normalize_kind(parts[2])
             value = int(parts[3])
-
+    
             self.last_values[(pin, kind)] = value
             self.io_state.emit(pin, kind, value)
-
+    
         except Exception:
             pass
 
@@ -198,7 +221,7 @@ class ConnectionManager(QObject):
             self.connected = False
 
     def start_pin_watch(self, pin: int, kind: str):
-        kind = kind.upper()
+        kind = self.normalize_kind(kind)
 
         if self.simulation:
             return
@@ -206,7 +229,7 @@ class ConnectionManager(QObject):
         self.send_command(f"IO.WATCH {pin} {kind} ON")
 
     def stop_pin_watch(self, pin: int, kind: str):
-        kind = kind.upper()
+        kind = self.normalize_kind(kind)
 
         if self.simulation:
             return
@@ -214,7 +237,7 @@ class ConnectionManager(QObject):
         self.send_command(f"IO.WATCH {pin} {kind} OFF")
 
     def read_pin(self, pin: int, kind: str):
-        kind = kind.upper()
+        kind = self.normalize_kind(kind)
 
         if self.simulation:
             if kind in ("BUTTON", "SWITCH", "SELECTOR"):

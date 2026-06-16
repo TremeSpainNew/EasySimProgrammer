@@ -5,16 +5,16 @@ def pin_to_text(pin):
 def build_add_command(device):
     pin = pin_to_text(device.pin)
 
-    if device.kind == "BUTTON":
+    if device.kind == "BOTON":
         return f"ADD BUTTON {pin} {device.name} {device.value1:g} {device.value2:g}"
 
-    if device.kind == "SWITCH":
+    if device.kind == "INTERRUPTOR":
         return f"ADD SWITCH {pin} {device.name} {device.value1:g} {device.value2:g}"
 
-    if device.kind == "OUTPUT":
+    if device.kind == "SALIDA DIGITAL":
         return f"ADD OUTPUT {pin} {device.name} {device.value1:g} {device.value2:g}"
 
-    if device.kind == "POT":
+    if device.kind == "POTENCIOMETRO":
         return f"ADD POT {pin} {device.name} {device.min_out:g} {device.max_out:g}"
 
     if device.kind == "SELECTOR":
@@ -26,7 +26,7 @@ def build_add_command(device):
 def build_extra_commands(device):
     commands = []
 
-    if device.kind == "POT":
+    if device.kind == "POTENCIOMETRO":
         pin = pin_to_text(device.pin)
 
         commands.append(

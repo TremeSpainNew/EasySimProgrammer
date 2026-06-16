@@ -64,12 +64,35 @@ class LivePinTester(QWidget):
 
         self.sim_timer = QTimer(self)
         self.sim_timer.timeout.connect(self.poll_simulation)
+    
+    def normalize_kind(self, kind: str) -> str:
+        kind = str(kind).upper()
+
+        mapping = {
+            "BOTON": "BUTTON",
+            "BOTÓN": "BUTTON",
+            "BUTTON": "BUTTON",
+
+            "INTERRUPTOR": "SWITCH",
+            "SWITCH": "SWITCH",
+
+            "SALIDA DIGITAL": "OUTPUT",
+            "OUTPUT": "OUTPUT",
+
+            "POTENCIOMETRO": "POT",
+            "POTENCIÓMETRO": "POT",
+            "POT": "POT",
+
+            "SELECTOR": "SELECTOR",
+        }
+
+        return mapping.get(kind, kind)
 
     def set_target(self, pin: int, kind: str):
         self.stop_watch()
 
         self.pin = pin
-        self.kind = kind.upper()
+        self.kind = self.normalize_kind(kind)
         self.output_state = 0
 
         self.calibrating = False
@@ -120,7 +143,7 @@ class LivePinTester(QWidget):
         self.update_display(value)
 
     def on_io_state(self, pin: int, kind: str, value: int):
-        kind = kind.upper()
+        kind = self.normalize_kind(kind)
 
         if pin != self.pin:
             return

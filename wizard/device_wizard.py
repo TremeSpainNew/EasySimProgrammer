@@ -25,7 +25,7 @@ class TypePage(QWizardPage):
         self.setSubTitle("Selecciona qué tipo de control quieres configurar.")
 
         self.kind = QComboBox()
-        self.kind.addItems(["BUTTON", "SWITCH", "OUTPUT", "POT", "SELECTOR"])
+        self.kind.addItems(["BOTON", "INTERRUPTOR", "SALIDA DIGITAL", "POTENCIOMETRO", "SELECTOR"])
 
         label = QLabel("Tipo de elemento:")
         label.setAlignment(Qt.AlignCenter)
@@ -70,7 +70,7 @@ class BasicPage(QWizardPage):
     def initializePage(self):
         kind = self.wizard().page(PAGE_TYPE).kind.currentText()
 
-        if kind == "POT":
+        if kind == "POTENCIOMETRO":
             self.pin_label.setText("Canal ADS:")
             self.pin.setRange(0, 7)
             self.pin.setPrefix("ADS")
@@ -86,7 +86,7 @@ class BasicPage(QWizardPage):
 
     def get_pin_token(self):
         kind = self.wizard().page(PAGE_TYPE).kind.currentText()
-        if kind == "POT":
+        if kind == "POTENCIOMETRO":
             return f"ADS{self.pin.value()}"
         return self.pin.value()
 
