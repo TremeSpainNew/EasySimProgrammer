@@ -42,7 +42,7 @@ class MainWindow(QMainWindow):
             ("POT", "Potenciómetros"),
             ("SELECTOR", "Selectores"),
         ]
-
+        
         for kind, title in self.kind_titles:
             table = QTableWidget()
             table.setColumnCount(7)
@@ -191,6 +191,29 @@ class MainWindow(QMainWindow):
 
     def add_log(self, text):
         self.log.append(text)
+        
+    def normalize_kind(self, kind: str) -> str:
+            kind = str(kind).upper()
+        
+            mapping = {
+                "BOTON": "BUTTON",
+                "BOTÓN": "BUTTON",
+                "BUTTON": "BUTTON",
+        
+                "INTERRUPTOR": "SWITCH",
+                "SWITCH": "SWITCH",
+        
+                "SALIDA DIGITAL": "OUTPUT",
+                "OUTPUT": "OUTPUT",
+        
+                "POTENCIOMETRO": "POT",
+                "POTENCIÓMETRO": "POT",
+                "POT": "POT",
+        
+                "SELECTOR": "SELECTOR",
+            }
+        
+            return mapping.get(kind, kind)
 
     # ==========================================================
     # CONFIRMACIONES / BORRADO REAL
@@ -488,11 +511,17 @@ class MainWindow(QMainWindow):
             if not devices:
                 return
 
+            for device in devices:
+                device.kind = self.normalize_kind(device.kind)
+
             self.devices.extend(devices)
             self.refresh_tables()
 
             for device in devices:
-                self.add_log(f"Añadido {device.kind}: pin={device.pin}, name={device.name}")
+                self.add_log(
+                    f"Añadido {device.kind}: "
+                    f"pin={device.pin}, name={device.name}"
+                )
 
     def refresh_tables(self):
         for table in self.tables.values():
@@ -667,6 +696,9 @@ class MainWindow(QMainWindow):
     
             if not devices:
                 return
+    
+            for device in devices:
+                device.kind = self.normalize_kind(device.kind)
     
             self.devices.extend(devices)
             self.refresh_tables()
