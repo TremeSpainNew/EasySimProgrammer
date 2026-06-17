@@ -1,6 +1,7 @@
 import random
 import socket
 import threading
+import time
 
 from PySide6.QtCore import QObject, Signal
 
@@ -25,9 +26,18 @@ class ConnectionManager(QObject):
 
         self._rx_thread = None
         self._rx_running = False
-        
+
+        self.auto_reconnect = False
+        self.last_ip = ""
+        self.last_port = 5000
+
+        self.last_rx_time = 0
+        self.ping_thread = None
+        self.ping_running = False
+        self.reconnecting = False
+
     def normalize_kind(self, kind: str) -> str:
-        kind = kind.upper()
+        kind = str(kind).upper()
 
         mapping = {
             "BOTON": "BUTTON",
@@ -62,6 +72,9 @@ class ConnectionManager(QObject):
         try:
             self.disconnect()
 
+            self.last_ip = ip
+            self.last_port = port
+
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.settimeout(2)
             self.sock.connect((ip, port))
@@ -70,8 +83,11 @@ class ConnectionManager(QObject):
             self.simulation = False
             self.connected = True
             self.mode = "TCP"
+            self.last_rx_time = time.time()
 
             self._start_rx_thread()
+            self._start_ping_thread()
+
             self.log.emit(f"Conectado por TCP a {ip}:{port}")
 
         except Exception as e:
@@ -95,6 +111,7 @@ class ConnectionManager(QObject):
             self.simulation = False
             self.connected = True
             self.mode = "SERIAL"
+            self.last_rx_time = time.time()
 
             self._start_rx_thread()
             self.log.emit(f"Conectado por Serial a {port} @ {baud}")
@@ -107,6 +124,8 @@ class ConnectionManager(QObject):
 
     def disconnect(self):
         self._rx_running = False
+        self.ping_running = False
+        self.reconnecting = False
 
         if self.sock:
             try:
@@ -128,9 +147,44 @@ class ConnectionManager(QObject):
             self.mode = "NONE"
 
     def _start_rx_thread(self):
+        if self._rx_running:
+            return
+
         self._rx_running = True
         self._rx_thread = threading.Thread(target=self._rx_loop, daemon=True)
         self._rx_thread.start()
+
+    def _start_ping_thread(self):
+        if self.ping_running:
+            return
+
+        self.ping_running = True
+        self.ping_thread = threading.Thread(target=self._ping_loop, daemon=True)
+        self.ping_thread.start()
+
+    def _ping_loop(self):
+        while self.ping_running:
+            time.sleep(3)
+
+            if self.simulation:
+                continue
+
+            if self.mode != "TCP":
+                continue
+
+            if not self.connected:
+                if self.auto_reconnect:
+                    self._start_reconnect_thread()
+                continue
+
+            try:
+                self.send_command("PING")
+
+                if time.time() - self.last_rx_time > 10:
+                    raise ConnectionError("Timeout esperando PONG")
+
+            except Exception as e:
+                self._mark_disconnected(f"Conexión perdida: {e}")
 
     def _rx_loop(self):
         buffer = b""
@@ -142,6 +196,10 @@ class ConnectionManager(QObject):
                 if self.mode == "TCP" and self.sock:
                     try:
                         chunk = self.sock.recv(512)
+
+                        if chunk == b"":
+                            raise ConnectionError("Socket cerrado por remoto")
+
                     except socket.timeout:
                         chunk = b""
 
@@ -156,38 +214,100 @@ class ConnectionManager(QObject):
                         text = line.decode("utf-8", errors="replace").strip()
 
                         if text:
+                            self.last_rx_time = time.time()
                             self.received.emit(text)
                             self.log.emit(f"< {text}")
                             self._parse_line(text)
 
-            except OSError:
+            except Exception as e:
                 if self._rx_running:
-                    self.log.emit("Conexión cerrada.")
-                self.connected = False
+                    self._mark_disconnected(f"Conexión cerrada: {e}")
                 break
 
-            except Exception as e:
-                self.log.emit(f"Error recibiendo: {e}")
-                self.connected = False
+        self._rx_running = False
+
+    def _mark_disconnected(self, reason: str = "Conexión perdida"):
+        if not self.connected and self.reconnecting:
+            return
+
+        self.log.emit(reason)
+
+        self.connected = False
+
+        try:
+            if self.sock:
+                self.sock.close()
+        except Exception:
+            pass
+
+        self.sock = None
+
+        if self.mode == "TCP":
+            self.mode = "TCP"
+            if self.auto_reconnect:
+                self._start_reconnect_thread()
+        else:
+            self.mode = "NONE"
+
+    def _start_reconnect_thread(self):
+        if self.reconnecting:
+            return
+
+        self.reconnecting = True
+        thread = threading.Thread(target=self._reconnect_loop, daemon=True)
+        thread.start()
+
+    def _reconnect_loop(self):
+        while self.auto_reconnect and not self.simulation:
+            if not self.last_ip:
                 break
+
+            try:
+                self.log.emit(f"Reconectando a {self.last_ip}:{self.last_port}...")
+
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2)
+                sock.connect((self.last_ip, self.last_port))
+                sock.settimeout(0.1)
+
+                self.sock = sock
+                self.connected = True
+                self.mode = "TCP"
+                self.last_rx_time = time.time()
+                self.reconnecting = False
+                self._rx_running = False
+
+                self._start_rx_thread()
+                self._start_ping_thread()
+
+                self.log.emit("Reconectado correctamente")
+
+                self.send_command("#DUMP")
+
+                return
+
+            except Exception:
+                time.sleep(3)
+
+        self.reconnecting = False
 
     def _parse_line(self, line: str):
         if not line.startswith("IO.STATE"):
             return
-    
+
         parts = line.split()
-    
+
         if len(parts) < 4:
             return
-    
+
         try:
             pin = int(parts[1])
             kind = self.normalize_kind(parts[2])
             value = int(parts[3])
-    
+
             self.last_values[(pin, kind)] = value
             self.io_state.emit(pin, kind, value)
-    
+
         except Exception:
             pass
 
@@ -217,8 +337,7 @@ class ConnectionManager(QObject):
             self.log.emit(f"> {command}")
 
         except Exception as e:
-            self.log.emit(f"Error enviando comando: {e}")
-            self.connected = False
+            self._mark_disconnected(f"Error enviando comando: {e}")
 
     def start_pin_watch(self, pin: int, kind: str):
         kind = self.normalize_kind(kind)

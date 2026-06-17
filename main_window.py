@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QLabel, QLineEdit, QSpinBox, QCheckBox, QComboBox,
     QGroupBox
 )
+from PySide6.QtCore import QTimer
 
 from wizard.device_wizard import DeviceWizard
 from storage import save_devices, load_devices
@@ -87,6 +88,14 @@ class MainWindow(QMainWindow):
         self.sim_check.setChecked(False)
         self.sim_check.stateChanged.connect(self.on_simulation_changed)
 
+        self.auto_reconnect_check = QCheckBox("Auto reconectar")
+        self.auto_reconnect_check.setChecked(False)
+        self.auto_reconnect_check.stateChanged.connect(self.on_auto_reconnect_changed)
+
+        self.auto_reconnect_timer = QTimer(self)
+        self.auto_reconnect_timer.setInterval(3000)
+        self.auto_reconnect_timer.timeout.connect(self.try_auto_reconnect)
+
         self.connection_type = QComboBox()
         self.connection_type.addItems(["TCP", "Serial"])
         self.connection_type.setFixedWidth(80)
@@ -124,6 +133,7 @@ class MainWindow(QMainWindow):
         connection_row.setSpacing(8)
         connection_row.addWidget(self.sim_check)
         connection_row.addWidget(self.connection_type)
+        connection_row.addWidget(self.auto_reconnect_check)
         self.lbl_ip = QLabel("IP:")
         self.lbl_port = QLabel("Puerto:")
         self.lbl_serial = QLabel("Serial:")
@@ -461,40 +471,90 @@ class MainWindow(QMainWindow):
         self.lbl_baud.setVisible(not is_tcp)
         self.baud_spin.setVisible(not is_tcp)
 
+        self.auto_reconnect_check.setVisible(is_tcp)
+
+        if not is_tcp:
+            self.auto_reconnect_timer.stop()
+
+    def on_auto_reconnect_changed(self):
+        if (
+            self.auto_reconnect_check.isChecked()
+            and self.connection_type.currentText() == "TCP"
+            and not self.sim_check.isChecked()
+        ):
+            self.auto_reconnect_timer.start()
+            self.add_log("Auto reconexión TCP activada.")
+        else:
+            self.auto_reconnect_timer.stop()
+            self.add_log("Auto reconexión TCP desactivada.")
+
+    def try_auto_reconnect(self):
+        if not self.auto_reconnect_check.isChecked():
+            self.auto_reconnect_timer.stop()
+            return
+
+        if self.sim_check.isChecked():
+            return
+
+        if self.connection_type.currentText() != "TCP":
+            self.auto_reconnect_timer.stop()
+            return
+
+        if self.connection.connected:
+            return
+
+        ip = self.ip_edit.text().strip()
+        port = self.port_spin.value()
+
+        if not ip:
+            return
+
+        self.add_log(f"Auto reconexión TCP: intentando {ip}:{port}...")
+        self.connection.connect_tcp(ip, port)
 
     def on_simulation_changed(self):
         self.connection.set_simulation(self.sim_check.isChecked())
+
+        if self.sim_check.isChecked():
+            self.auto_reconnect_timer.stop()
+        elif self.auto_reconnect_check.isChecked() and self.connection_type.currentText() == "TCP":
+            self.auto_reconnect_timer.start()
 
     def connect_selected(self):
         if self.sim_check.isChecked():
             self.add_log("La simulación está activada.")
             return
-
+    
         mode = self.connection_type.currentText()
-
+    
+        self.connection.auto_reconnect = self.auto_reconnect_check.isChecked()
+    
         if mode == "TCP":
             ip = self.ip_edit.text().strip()
             port = self.port_spin.value()
-
+    
             if not ip:
                 QMessageBox.warning(self, "TCP", "Introduce una IP.")
                 return
-
+    
             self.connection.connect_tcp(ip, port)
-
+    
         else:
             port_name = self.serial_port_edit.currentPort()
             baud = self.baud_spin.value()
-
+    
             if not port_name:
                 QMessageBox.warning(self, "Serial", "Introduce un puerto Serial.")
                 return
-
+    
+            self.connection.auto_reconnect = False
             self.connection.connect_serial(port_name, baud)
-
+    
         self.sim_check.setChecked(self.connection.simulation)
 
     def disconnect(self):
+        self.auto_reconnect_timer.stop()
+        self.auto_reconnect_check.setChecked(False)
         self.connection.disconnect()
         self.add_log("Desconectado.")
 
@@ -690,19 +750,19 @@ class MainWindow(QMainWindow):
     
     def open_module_wizard(self):
         wizard = ModuleWizard(devices=self.devices, parent=self)
-    
+
         if wizard.exec():
             devices = wizard.get_devices()
-    
+
             if not devices:
                 return
-    
+
             for device in devices:
                 device.kind = self.normalize_kind(device.kind)
-    
+
             self.devices.extend(devices)
             self.refresh_tables()
-    
+
             for device in devices:
                 self.add_log(
                     f"Añadido desde módulo {device.kind}: "
@@ -714,5 +774,6 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def closeEvent(self, event):
+        self.auto_reconnect_timer.stop()
         self.connection.disconnect()
         super().closeEvent(event)
