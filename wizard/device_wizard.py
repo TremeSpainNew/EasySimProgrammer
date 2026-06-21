@@ -17,6 +17,18 @@ PAGE_OPTIONS = 3
 PAGE_SELECTOR = 4
 PAGE_SUMMARY = 5
 
+KIND_LABELS = {
+    "BUTTON": "Pulsador",
+    "SWITCH": "Interruptor",
+    "OUTPUT": "Salida Digital",
+    "POT": "Potenciometro",
+    "SELECTOR": "Selector",
+}
+
+
+def kind_label(kind: str) -> str:
+    return KIND_LABELS.get(str(kind).upper(), str(kind))
+
 
 class TypePage(QWizardPage):
     def __init__(self):
@@ -26,13 +38,11 @@ class TypePage(QWizardPage):
         self.setSubTitle("Selecciona qué tipo de control quieres configurar.")
 
         self.kind = QComboBox()
-        self.kind.addItems([
-            "BUTTON",
-            "SWITCH",
-            "OUTPUT",
-            "POT",
-            "SELECTOR"
-        ])
+        self.kind.addItem(kind_label("BUTTON"), "BUTTON")
+        self.kind.addItem(kind_label("SWITCH"), "SWITCH")
+        self.kind.addItem(kind_label("OUTPUT"), "OUTPUT")
+        self.kind.addItem(kind_label("POT"), "POT")
+        self.kind.addItem(kind_label("SELECTOR"), "SELECTOR")
 
         label = QLabel("Tipo de elemento:")
         label.setAlignment(Qt.AlignCenter)
@@ -44,6 +54,23 @@ class TypePage(QWizardPage):
         layout.addStretch()
 
         self.setLayout(layout)
+
+    def current_kind(self):
+        return self.kind.currentData() or self.kind.currentText()
+
+    def initializePage(self):
+        wizard = self.wizard()
+        device = getattr(wizard, "existing_device", None)
+
+        if not device:
+            self.kind.setEnabled(True)
+            return
+
+        index = self.kind.findData(str(device.kind).upper())
+        if index >= 0:
+            self.kind.setCurrentIndex(index)
+
+        self.kind.setEnabled(False)
 
     def nextId(self):
         return PAGE_BASIC
@@ -82,9 +109,10 @@ class BasicPage(QWizardPage):
         form.addRow("", self.warning)
 
         self.setLayout(form)
+        self._prefilled = False
 
     def initializePage(self):
-        kind = self.wizard().page(PAGE_TYPE).kind.currentText()
+        kind = self.wizard().page(PAGE_TYPE).current_kind()
 
         if kind == "POT":
             self.pin_label.setText("Canal ADS:")
@@ -113,10 +141,20 @@ class BasicPage(QWizardPage):
 
             self.name.blockSignals(False)
 
+        device = getattr(self.wizard(), "existing_device", None)
+        if device and not self._prefilled and str(device.kind).upper() == kind:
+            if kind == "POT" and str(device.pin).upper().startswith("ADS"):
+                self.pin.setValue(int(str(device.pin).upper()[3:]))
+            elif kind != "SELECTOR":
+                self.pin.setValue(int(device.pin))
+
+            self.name.setCurrentText(str(device.name))
+            self._prefilled = True
+
         self.completeChanged.emit()
 
     def get_pin_token(self):
-        kind = self.wizard().page(PAGE_TYPE).kind.currentText()
+        kind = self.wizard().page(PAGE_TYPE).current_kind()
 
         if kind == "POT":
             return f"ADS{self.pin.value()}"
@@ -128,7 +166,7 @@ class BasicPage(QWizardPage):
 
     def isComplete(self):
         wizard = self.wizard()
-        kind = wizard.page(PAGE_TYPE).kind.currentText()
+        kind = wizard.page(PAGE_TYPE).current_kind()
 
         name = self.get_name()
         pin_token = self.get_pin_token()
@@ -137,7 +175,12 @@ class BasicPage(QWizardPage):
             self.warning.setText("Introduce o selecciona un parámetro.")
             return False
 
-        if kind != "SELECTOR":
+        if kind == "SELECTOR":
+            if wizard and hasattr(wizard, "is_selector_name_used"):
+                if wizard.is_selector_name_used(name):
+                    self.warning.setText("Ya existe otro selector con ese nombre.")
+                    return False
+        else:
             if wizard and hasattr(wizard, "is_pin_used"):
                 if wizard.is_pin_used(pin_token):
                     self.warning.setText(f"El pin/canal {pin_token} ya está en uso.")
@@ -147,7 +190,7 @@ class BasicPage(QWizardPage):
         return True
 
     def nextId(self):
-        kind = self.wizard().page(PAGE_TYPE).kind.currentText()
+        kind = self.wizard().page(PAGE_TYPE).current_kind()
 
         if kind == "SELECTOR":
             return PAGE_SELECTOR
@@ -178,7 +221,7 @@ class TestPage(QWizardPage):
 
     def initializePage(self):
         wizard = self.wizard()
-        kind = wizard.page(PAGE_TYPE).kind.currentText()
+        kind = wizard.page(PAGE_TYPE).current_kind()
         pin_token = wizard.page(PAGE_BASIC).get_pin_token()
         self.tester.set_target(pin_token, kind)
 
@@ -239,6 +282,12 @@ class OptionsPage(QWizardPage):
         self.smooth.setSingleStep(0.01)
         self.smooth.setValue(0.10)
 
+        self.threshold = QDoubleSpinBox()
+        self.threshold.setRange(0, 1)
+        self.threshold.setDecimals(4)
+        self.threshold.setSingleStep(0.01)
+        self.threshold.setValue(0.50)
+
         self.send_mode = QComboBox()
         self.send_mode.addItems([
             "CONTINUO",
@@ -276,9 +325,49 @@ class OptionsPage(QWizardPage):
         self.notch_warning.setStyleSheet("color: #d9534f; font-weight: bold;")
         self.notch_warning.setWordWrap(True)
 
+        self.notch_hyst = QDoubleSpinBox()
+        self.notch_hyst.setRange(0, 0.3)
+        self.notch_hyst.setDecimals(3)
+        self.notch_hyst.setSingleStep(0.01)
+        self.notch_hyst.setValue(0.05)
+
+        self.notch_partial = QCheckBox("Activar muescas parciales")
+        self.notch_partial.setChecked(False)
+
+        self.notch_snapwin = QDoubleSpinBox()
+        self.notch_snapwin.setRange(0, 0.3)
+        self.notch_snapwin.setDecimals(3)
+        self.notch_snapwin.setSingleStep(0.01)
+        self.notch_snapwin.setValue(0.03)
+
+        self.split_mode = QComboBox()
+        self.split_mode.addItems(["OFF", "DUAL", "SIGNED", "CENTERED"])
+
+        self.split_deadband = QDoubleSpinBox()
+        self.split_deadband.setRange(0, 0.3)
+        self.split_deadband.setDecimals(3)
+        self.split_deadband.setSingleStep(0.01)
+        self.split_deadband.setValue(0.02)
+
+        self.split_center_bias = QDoubleSpinBox()
+        self.split_center_bias.setRange(0, 1)
+        self.split_center_bias.setDecimals(3)
+        self.split_center_bias.setSingleStep(0.01)
+        self.split_center_bias.setValue(0.5)
+
+        self.split_tag = QLineEdit()
+        self.split_tag.setPlaceholderText("Tag unico opcional")
+
+        self.split_tag_fwd = QLineEdit()
+        self.split_tag_fwd.setPlaceholderText("Tag forward")
+
+        self.split_tag_back = QLineEdit()
+        self.split_tag_back.setPlaceholderText("Tag backward")
+
         self.enable_notches.stateChanged.connect(self.on_notch_enabled_changed)
         self.notch_count.valueChanged.connect(self.rebuild_notch_table)
         self.notch_table.itemChanged.connect(lambda _item: self.completeChanged.emit())
+        self.split_mode.currentTextChanged.connect(self.on_split_mode_changed)
 
         self.form = QFormLayout()
         self.form.addRow("Valor 1:", self.value1)
@@ -288,6 +377,7 @@ class OptionsPage(QWizardPage):
         self.form.addRow("Salida mínima:", self.min_out)
         self.form.addRow("Salida máxima:", self.max_out)
         self.form.addRow("Suavizado:", self.smooth)
+        self.form.addRow("Umbral cambio:", self.threshold)
         self.form.addRow("Modo envío:", self.send_mode)
         self.form.addRow("Intervalo:", self.interval)
         self.form.addRow("", self.as_integer)
@@ -295,24 +385,73 @@ class OptionsPage(QWizardPage):
         self.form.addRow("", self.live_value_label)
         self.form.addRow("Nº muescas:", self.notch_count)
         self.form.addRow("Tabla muescas:", self.notch_table)
+        self.form.addRow("Histéresis muescas:", self.notch_hyst)
+        self.form.addRow("", self.notch_partial)
+        self.form.addRow("Ventana snap:", self.notch_snapwin)
         self.form.addRow("", self.notch_warning)
+        self.form.addRow("Modo split:", self.split_mode)
+        self.form.addRow("Deadband split:", self.split_deadband)
+        self.form.addRow("Bias centro split:", self.split_center_bias)
+        self.form.addRow("Tag split:", self.split_tag)
+        self.form.addRow("Tag forward:", self.split_tag_fwd)
+        self.form.addRow("Tag backward:", self.split_tag_back)
 
         self.setLayout(self.form)
+        self._prefilled = False
 
     def initializePage(self):
         wizard = self.wizard()
-        kind = wizard.page(PAGE_TYPE).kind.currentText()
+        kind = wizard.page(PAGE_TYPE).current_kind()
 
         is_pot = kind == "POT"
+        device = getattr(wizard, "existing_device", None)
+
+        if is_pot and device and not self._prefilled and str(device.kind).upper() == "POT":
+            self.min_in.setValue(int(device.min_in))
+            self.max_in.setValue(int(device.max_in))
+            self.min_out.setValue(float(device.min_out))
+            self.max_out.setValue(float(device.max_out))
+            self.smooth.setValue(float(device.smooth))
+            self.threshold.setValue(float(getattr(device, "pot_threshold", 0.5)))
+            self.send_mode.setCurrentText(str(device.send_mode))
+            self.interval.setValue(int(device.interval))
+            self.as_integer.setChecked(bool(device.as_integer))
+
+            self.enable_notches.setChecked(bool(getattr(device, "pot_notches_enabled", False)))
+            notches = list(getattr(device, "pot_notches", []))
+            self.notch_count.setValue(max(2, len(notches) or 2))
+            self.notch_hyst.setValue(float(getattr(device, "pot_notch_hyst", 0.05)))
+            self.notch_partial.setChecked(bool(getattr(device, "pot_notch_partial", False)))
+            self.notch_snapwin.setValue(float(getattr(device, "pot_notch_snapwin", 0.03)))
+
+            self.split_mode.setCurrentText(str(getattr(device, "pot_split_mode", "OFF")).upper())
+            self.split_deadband.setValue(float(getattr(device, "pot_split_deadband", 0.02)))
+            self.split_center_bias.setValue(float(getattr(device, "pot_split_center_bias", 0.5)))
+            self.split_tag.setText(str(getattr(device, "pot_split_tag", "")))
+            self.split_tag_fwd.setText(str(getattr(device, "pot_split_tag_fwd", "")))
+            self.split_tag_back.setText(str(getattr(device, "pot_split_tag_back", "")))
+
+            self.rebuild_notch_table()
+            for row, (raw_value, out_value) in enumerate(notches):
+                if row >= self.notch_table.rowCount():
+                    break
+                self.notch_table.setItem(
+                    row,
+                    0,
+                    QTableWidgetItem("" if raw_value is None else str(raw_value))
+                )
+                self.notch_table.setItem(row, 2, QTableWidgetItem(f"{out_value:g}"))
+
+            self._prefilled = True
 
         test_page = wizard.page(PAGE_TEST)
         cal_min, cal_max = test_page.get_calibration()
 
-        if is_pot and cal_min is not None and cal_max is not None:
+        if is_pot and cal_min is not None and cal_max is not None and not self._prefilled:
             self.min_in.setValue(int(cal_min))
             self.max_in.setValue(int(cal_max))
 
-        if is_pot:
+        if is_pot and not self._prefilled:
             self.rebuild_notch_table()
 
         rows_for_pot = {
@@ -321,10 +460,19 @@ class OptionsPage(QWizardPage):
             "Salida mínima:",
             "Salida máxima:",
             "Suavizado:",
+            "Umbral cambio:",
             "Modo envío:",
             "Intervalo:",
             "Nº muescas:",
             "Tabla muescas:",
+            "Histéresis muescas:",
+            "Ventana snap:",
+            "Modo split:",
+            "Deadband split:",
+            "Bias centro split:",
+            "Tag split:",
+            "Tag forward:",
+            "Tag backward:",
         }
 
         rows_for_normal = {
@@ -344,8 +492,14 @@ class OptionsPage(QWizardPage):
             if text in rows_for_pot:
                 visible = is_pot
 
-                if field in (self.notch_count, self.notch_table):
+                if field in (self.notch_count, self.notch_table, self.notch_hyst, self.notch_snapwin):
                     visible = is_pot and self.enable_notches.isChecked()
+
+                if field in (self.split_deadband, self.split_center_bias, self.split_tag):
+                    visible = is_pot and self.split_mode.currentText() != "OFF"
+
+                if field in (self.split_tag_fwd, self.split_tag_back):
+                    visible = is_pot and self.split_mode.currentText() == "DUAL"
 
                 if label:
                     label.setVisible(visible)
@@ -368,12 +522,19 @@ class OptionsPage(QWizardPage):
                 elif field == self.live_value_label:
                     field.setVisible(is_pot and self.enable_notches.isChecked())
 
+                elif field == self.notch_partial:
+                    field.setVisible(is_pot and self.enable_notches.isChecked())
+
                 elif field == self.notch_warning:
                     field.setVisible(is_pot and self.enable_notches.isChecked())
 
         self.completeChanged.emit()
 
     def on_notch_enabled_changed(self):
+        self.initializePage()
+        self.completeChanged.emit()
+
+    def on_split_mode_changed(self):
         self.initializePage()
         self.completeChanged.emit()
 
@@ -467,7 +628,8 @@ class OptionsPage(QWizardPage):
             pot_item = self.notch_table.item(row, 0)
             value_item = self.notch_table.item(row, 2)
 
-            pot_value = int(pot_item.text().strip())
+            pot_text = pot_item.text().strip()
+            pot_value = None if pot_text == "" else int(pot_text)
             out_value = float(value_item.text().strip())
 
             notches.append((pot_value, out_value))
@@ -494,28 +656,30 @@ class OptionsPage(QWizardPage):
                 return False
 
             try:
-                pot_value = int(pot_item.text().strip())
+                pot_text = pot_item.text().strip()
+                pot_value = int(pot_text) if pot_text else None
                 float(value_item.text().strip())
             except Exception:
                 self.notch_warning.setText(f"Valores inválidos en muesca {row + 1}.")
                 return False
 
-            if pot_value < 0 or pot_value > 65535:
+            if pot_value is not None and (pot_value < 0 or pot_value > 65535):
                 self.notch_warning.setText(f"Valor POT fuera de rango en muesca {row + 1}.")
                 return False
 
-            if pot_value in used_values:
+            if pot_value is not None and pot_value in used_values:
                 self.notch_warning.setText(f"Valor POT repetido en muesca {row + 1}.")
                 return False
 
-            used_values.add(pot_value)
+            if pot_value is not None:
+                used_values.add(pot_value)
 
         self.notch_warning.setText("")
         return True
 
     def isComplete(self):
         wizard = self.wizard()
-        kind = wizard.page(PAGE_TYPE).kind.currentText()
+        kind = wizard.page(PAGE_TYPE).current_kind()
 
         if kind == "POT":
             return self.validate_notches()
@@ -558,9 +722,29 @@ class SelectorPage(QWizardPage):
         layout.addWidget(self.warning)
 
         self.setLayout(layout)
+        self._prefilled = False
 
     def initializePage(self):
-        self.rebuild_table()
+        wizard = self.wizard()
+        selector_devices = getattr(wizard, "existing_selector_devices", None)
+
+        if selector_devices and not self._prefilled:
+            ordered = sorted(selector_devices, key=lambda device: float(device.value1))
+
+            self.contact_count.setValue(max(2, len(ordered)))
+            self.rebuild_table()
+
+            for row, device in enumerate(ordered):
+                if row >= self.table.rowCount():
+                    break
+
+                self.table.setItem(row, 0, QTableWidgetItem(str(device.pin)))
+                self.table.setItem(row, 1, QTableWidgetItem(f"{float(device.value1):g}"))
+
+            self._prefilled = True
+        else:
+            self.rebuild_table()
+
         self.completeChanged.emit()
 
     def rebuild_table(self):
@@ -678,7 +862,7 @@ class SummaryPage(QWizardPage):
     def initializePage(self):
         wizard = self.wizard()
 
-        kind = wizard.page(PAGE_TYPE).kind.currentText()
+        kind = wizard.page(PAGE_TYPE).current_kind()
         basic = wizard.page(PAGE_BASIC)
         options = wizard.page(PAGE_OPTIONS)
 
@@ -686,7 +870,7 @@ class SummaryPage(QWizardPage):
             contacts = wizard.page(PAGE_SELECTOR).get_contacts()
 
             lines = [
-                "Tipo: SELECTOR",
+                f"Tipo: {kind_label(kind)}",
                 f"Nombre: {basic.get_name()}",
                 "",
                 "Contactos:"
@@ -700,13 +884,14 @@ class SummaryPage(QWizardPage):
 
         if kind == "POT":
             lines = [
-                f"Tipo: {kind}",
+                f"Tipo: {kind_label(kind)}",
                 f"Pin: {basic.get_pin_token()}",
                 f"Nombre: {basic.get_name()}",
                 "",
                 f"Entrada: {options.min_in.value()} - {options.max_in.value()}",
                 f"Salida: {options.min_out.value()} - {options.max_out.value()}",
                 f"Suavizado: {options.smooth.value()}",
+                f"Umbral cambio: {options.threshold.value()}",
                 f"Modo envío: {options.send_mode.currentText()}",
                 f"Intervalo: {options.interval.value()}",
                 f"Formato: {'INT' if options.as_integer.isChecked() else 'FLOAT'}",
@@ -716,14 +901,32 @@ class SummaryPage(QWizardPage):
                 lines.append("")
                 lines.append("Muescas:")
 
+                lines.append(f"Histéresis: {options.notch_hyst.value()}")
+                lines.append(f"Parciales: {'ON' if options.notch_partial.isChecked() else 'OFF'}")
+                lines.append(f"Snap window: {options.notch_snapwin.value()}")
+
                 for pot_value, out_value in options.get_notches():
-                    lines.append(f"  POT {pot_value} -> {out_value:g}")
+                    left = "AUTO" if pot_value is None else str(pot_value)
+                    lines.append(f"  POT {left} -> {out_value:g}")
+
+            if options.split_mode.currentText() != "OFF":
+                lines.append("")
+                lines.append(f"Split: {options.split_mode.currentText()}")
+                lines.append(f"Deadband: {options.split_deadband.value()}")
+                lines.append(f"Bias centro: {options.split_center_bias.value()}")
+                if options.split_tag.text().strip():
+                    lines.append(f"Tag split: {options.split_tag.text().strip()}")
+                if options.split_mode.currentText() == "DUAL":
+                    if options.split_tag_fwd.text().strip():
+                        lines.append(f"Tag forward: {options.split_tag_fwd.text().strip()}")
+                    if options.split_tag_back.text().strip():
+                        lines.append(f"Tag backward: {options.split_tag_back.text().strip()}")
 
             self.label.setText("\n".join(lines))
             return
 
         text = (
-            f"Tipo: {kind}\n"
+            f"Tipo: {kind_label(kind)}\n"
             f"Pin: {basic.get_pin_token()}\n"
             f"Nombre: {basic.get_name()}\n\n"
             f"Valor 1: {options.value1.value()}\n"
@@ -737,12 +940,25 @@ class SummaryPage(QWizardPage):
 
 
 class DeviceWizard(QWizard):
-    def __init__(self, connection, devices=None, parent=None, parameter_catalog=None):
+    def __init__(
+        self,
+        connection,
+        devices=None,
+        parent=None,
+        parameter_catalog=None,
+        existing_device=None,
+        existing_selector_devices=None,
+    ):
         super().__init__(parent)
 
         self.connection = connection
         self.devices = devices or []
         self.parameter_catalog = parameter_catalog
+        self.existing_device = existing_device
+        self.existing_selector_devices = existing_selector_devices or []
+
+        if self.existing_device is None and self.existing_selector_devices:
+            self.existing_device = self.existing_selector_devices[0]
 
         self.setWindowTitle("Asistente EasySim")
         self.resize(760, 560)
@@ -812,10 +1028,33 @@ class DeviceWizard(QWizard):
         super().closeEvent(event)
 
     def is_pin_used(self, pin):
-        return any(str(device.pin) == str(pin) for device in self.devices)
+        for device in self.devices:
+            if device is self.existing_device:
+                continue
+            if device in self.existing_selector_devices:
+                continue
+            if str(device.pin) == str(pin):
+                return True
+        return False
+
+    def is_selector_name_used(self, name):
+        selector_name = str(name).strip()
+
+        if not selector_name:
+            return False
+
+        for device in self.devices:
+            if device.kind != "SELECTOR":
+                continue
+            if device in self.existing_selector_devices:
+                continue
+            if str(device.name).strip() == selector_name:
+                return True
+
+        return False
 
     def get_devices(self):
-        kind = self.page(PAGE_TYPE).kind.currentText()
+        kind = self.page(PAGE_TYPE).current_kind()
         basic = self.page(PAGE_BASIC)
 
         if kind == "SELECTOR":
@@ -858,11 +1097,19 @@ class DeviceWizard(QWizard):
             send_mode=options.send_mode.currentText(),
             interval=options.interval.value(),
             as_integer=options.as_integer.isChecked(),
+            pot_threshold=options.threshold.value(),
+            pot_notches_enabled=options.enable_notches.isChecked() if kind == "POT" else False,
+            pot_notches=options.get_notches() if kind == "POT" else [],
+            pot_notch_hyst=options.notch_hyst.value() if kind == "POT" else 0.05,
+            pot_notch_partial=options.notch_partial.isChecked() if kind == "POT" else False,
+            pot_notch_snapwin=options.notch_snapwin.value() if kind == "POT" else 0.03,
+            pot_split_mode=options.split_mode.currentText() if kind == "POT" else "OFF",
+            pot_split_deadband=options.split_deadband.value() if kind == "POT" else 0.02,
+            pot_split_center_bias=options.split_center_bias.value() if kind == "POT" else 0.5,
+            pot_split_tag=options.split_tag.text().strip() if kind == "POT" else "",
+            pot_split_tag_fwd=options.split_tag_fwd.text().strip() if kind == "POT" else "",
+            pot_split_tag_back=options.split_tag_back.text().strip() if kind == "POT" else "",
         )
-
-        if kind == "POT":
-            device.pot_notches_enabled = options.enable_notches.isChecked()
-            device.pot_notches = options.get_notches()
 
         return [device]
 

@@ -88,7 +88,17 @@ class LivePinTester(QWidget):
 
         return mapping.get(kind, kind)
 
-    def set_target(self, pin: int, kind: str):
+    def display_kind(self, kind: str) -> str:
+        labels = {
+            "BUTTON": "pulsador",
+            "SWITCH": "interruptor",
+            "OUTPUT": "salida",
+            "POT": "potenciometro",
+            "SELECTOR": "selector",
+        }
+        return labels.get(self.normalize_kind(kind), str(kind).lower())
+
+    def set_target(self, pin, kind: str):
         self.stop_watch()
 
         self.pin = pin
@@ -100,7 +110,7 @@ class LivePinTester(QWidget):
         self.cal_max = None
         self.calibrate_button.setText("Calibrar rango POT")
 
-        self.title.setText(f"Esperando {self.kind} en pin {pin}")
+        self.title.setText(f"Esperando {self.display_kind(self.kind)} en pin {pin}")
         self.status.setText("Esperando estado del ESP32...")
 
         is_pot = self.kind == "POT"
@@ -142,7 +152,7 @@ class LivePinTester(QWidget):
         value = self.connection.read_pin(self.pin, self.kind)
         self.update_display(value)
 
-    def on_io_state(self, pin: int, kind: str, value: int):
+    def on_io_state(self, pin, kind: str, value: int):
         kind = self.normalize_kind(kind)
 
         if pin != self.pin:

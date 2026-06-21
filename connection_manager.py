@@ -9,7 +9,7 @@ from PySide6.QtCore import QObject, Signal
 class ConnectionManager(QObject):
     log = Signal(str)
     received = Signal(str)
-    io_state = Signal(int, str, int)
+    io_state = Signal(object, str, int)
 
     def __init__(self):
         super().__init__()
@@ -58,6 +58,19 @@ class ConnectionManager(QObject):
         }
 
         return mapping.get(kind, kind)
+
+    def normalize_pin(self, pin):
+        text = str(pin).strip().upper()
+
+        if text.startswith("ADS"):
+            channel = text[3:]
+
+            if not channel.isdigit():
+                raise ValueError(f"Canal ADS inválido: {pin}")
+
+            return f"ADS{int(channel)}"
+
+        return int(text)
 
     def set_simulation(self, enabled: bool):
         self.disconnect()
@@ -301,7 +314,7 @@ class ConnectionManager(QObject):
             return
 
         try:
-            pin = int(parts[1])
+            pin = self.normalize_pin(parts[1])
             kind = self.normalize_kind(parts[2])
             value = int(parts[3])
 
@@ -339,7 +352,7 @@ class ConnectionManager(QObject):
         except Exception as e:
             self._mark_disconnected(f"Error enviando comando: {e}")
 
-    def start_pin_watch(self, pin: int, kind: str):
+    def start_pin_watch(self, pin, kind: str):
         kind = self.normalize_kind(kind)
 
         if self.simulation:
@@ -347,7 +360,7 @@ class ConnectionManager(QObject):
 
         self.send_command(f"IO.WATCH {pin} {kind} ON")
 
-    def stop_pin_watch(self, pin: int, kind: str):
+    def stop_pin_watch(self, pin, kind: str):
         kind = self.normalize_kind(kind)
 
         if self.simulation:
@@ -355,7 +368,7 @@ class ConnectionManager(QObject):
 
         self.send_command(f"IO.WATCH {pin} {kind} OFF")
 
-    def read_pin(self, pin: int, kind: str):
+    def read_pin(self, pin, kind: str):
         kind = self.normalize_kind(kind)
 
         if self.simulation:

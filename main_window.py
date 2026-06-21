@@ -73,6 +73,7 @@ class MainWindow(QMainWindow):
 
         self.btn_add = QPushButton("Añadir con asistente")
         self.btn_add_module = QPushButton("Añadir módulo IO")
+        self.btn_edit = QPushButton("Editar seleccionado")
         self.btn_delete = QPushButton("Eliminar seleccionado")
         self.btn_save = QPushButton("Guardar JSON")
         self.btn_load = QPushButton("Cargar JSON")
@@ -83,6 +84,7 @@ class MainWindow(QMainWindow):
 
         self.btn_add.clicked.connect(self.add_device)
         self.btn_add_module.clicked.connect(self.open_module_wizard)
+        self.btn_edit.clicked.connect(self.edit_selected)
         self.btn_delete.clicked.connect(self.delete_selected)
         self.btn_save.clicked.connect(self.save_json)
         self.btn_load.clicked.connect(self.load_json)
@@ -165,6 +167,7 @@ class MainWindow(QMainWindow):
         button_row.setSpacing(8)
         button_row.addWidget(self.btn_add)
         button_row.addWidget(self.btn_add_module)
+        button_row.addWidget(self.btn_edit)
         button_row.addWidget(self.btn_delete)
         button_row.addWidget(self.btn_manual)
         button_row.addStretch()
@@ -290,6 +293,70 @@ class MainWindow(QMainWindow):
 
         return reply == QMessageBox.Yes
 
+    def get_selector_group(self, device):
+        if not device or device.kind != "SELECTOR":
+            return []
+
+        return [
+            item for item in self.devices
+            if item.kind == "SELECTOR" and item.name == device.name
+        ]
+
+    def get_table_devices(self, kind):
+        if kind != "SELECTOR":
+            return [device for device in self.devices if device.kind == kind]
+
+        selector_rows = []
+        seen_names = set()
+
+        for device in self.devices:
+            if device.kind != "SELECTOR" or device.name in seen_names:
+                continue
+
+            selector_rows.append(device)
+            seen_names.add(device.name)
+
+        return selector_rows
+
+    def describe_selector_group(self, device):
+        selector_devices = sorted(
+            self.get_selector_group(device),
+            key=lambda item: float(item.value1),
+        )
+
+        if not selector_devices:
+            return "", "", ""
+
+        pins_text = ", ".join(str(item.pin) for item in selector_devices)
+        values_text = ", ".join(f"{float(item.value1):g}" for item in selector_devices)
+        contacts_text = f"{len(selector_devices)} contactos"
+
+        return pins_text, contacts_text, values_text
+
+    def confirm_delete_selector_group(self, device):
+        selector_devices = self.get_selector_group(device)
+        total = len(selector_devices)
+
+        if total <= 1:
+            return self.confirm_delete_device(device)
+
+        pins = ", ".join(str(item.pin) for item in selector_devices)
+        reply = QMessageBox.question(
+            self,
+            "Confirmar eliminación",
+            (
+                f"Vas a eliminar el selector completo:\n\n"
+                f"Selector: {device.name}\n"
+                f"Contactos: {total}\n"
+                f"Pines: {pins}\n\n"
+                f"¿Quieres continuar?"
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        return reply == QMessageBox.Yes
+
     def build_delete_command(self, device):
         if device.kind == "SELECTOR":
             return f"SEL.DELPIN {device.pin}"
@@ -304,6 +371,21 @@ class MainWindow(QMainWindow):
         self.connection.send_command("#END")
 
         self.add_log(f"🗑️ Borrado enviado: {command}")
+
+    def send_delete_selector_group(self, device):
+        selector_devices = self.get_selector_group(device)
+
+        if not selector_devices:
+            return
+
+        self.connection.send_command("#CONFIG")
+
+        for item in selector_devices:
+            command = self.build_delete_command(item)
+            self.connection.send_command(command)
+            self.add_log(f"🗑️ Borrado enviado: {command}")
+
+        self.connection.send_command("#END")
 
     def confirm_replace_from_dump(self):
         if not self.devices:
@@ -374,6 +456,14 @@ class MainWindow(QMainWindow):
             self.parse_cfg_line(parts)
             return
 
+        if head == "NOTCH":
+            self.parse_notch_line(parts)
+            return
+
+        if head.startswith("POT.SPLIT"):
+            self.parse_pot_split_line(parts)
+            return
+
     def parse_add_line(self, parts):
         if len(parts) < 5:
             return
@@ -438,12 +528,7 @@ class MainWindow(QMainWindow):
 
         field = parts[2].upper()
 
-        device = None
-        for dev in self.dump_devices.values():
-            if dev.kind == "POT" and dev.pin == pin:
-                device = dev
-                break
-
+        device = self.get_dump_pot_device(pin)
         if device is None:
             return
 
@@ -467,7 +552,117 @@ class MainWindow(QMainWindow):
                     device.interval = int(float(parts[4]))
 
             elif field == "THRESH" and len(parts) >= 4:
-                pass
+                device.pot_threshold = float(parts[3])
+
+        except Exception:
+            pass
+
+    def get_dump_pot_device(self, pin):
+        for dev in self.dump_devices.values():
+            if dev.kind == "POT" and dev.pin == pin:
+                return dev
+        return None
+
+    def rebuild_dump_notches(self, device):
+        values = getattr(device, "_dump_notch_values", [])
+        centers = getattr(device, "_dump_notch_centers", [])
+
+        if not values:
+            device.pot_notches_enabled = False
+            device.pot_notches = []
+            return
+
+        notches = []
+        for index, out_value in enumerate(values):
+            raw_value = centers[index] if index < len(centers) else None
+            notches.append((raw_value, out_value))
+
+        device.pot_notches_enabled = True
+        device.pot_notches = notches
+
+    def parse_notch_line(self, parts):
+        if len(parts) < 3:
+            return
+
+        sub = parts[1].upper()
+
+        try:
+            pin = self.parse_pin(parts[2])
+        except Exception:
+            return
+
+        device = self.get_dump_pot_device(pin)
+        if device is None:
+            return
+
+        try:
+            if sub == "COUNT" and len(parts) >= 4:
+                count = int(parts[3])
+                device.pot_notches_enabled = count > 0
+                if count <= 0:
+                    device.pot_notches = []
+                    device._dump_notch_values = []
+                    device._dump_notch_centers = []
+
+            elif sub == "HYST" and len(parts) >= 4:
+                device.pot_notch_hyst = float(parts[3])
+
+            elif sub == "LIST.VALS" and len(parts) >= 4:
+                values = [
+                    float(item) for item in parts[3].split(",")
+                    if item.strip()
+                ]
+                device._dump_notch_values = values
+                self.rebuild_dump_notches(device)
+
+            elif sub == "LIST.CENT" and len(parts) >= 4:
+                centers = [
+                    int(item) for item in parts[3].split(",")
+                    if item.strip()
+                ]
+                device._dump_notch_centers = centers
+                self.rebuild_dump_notches(device)
+
+            elif sub == "PARTIAL" and len(parts) >= 4:
+                device.pot_notch_partial = parts[3].upper() in ("ON", "TRUE", "1")
+
+            elif sub == "SNAPWIN" and len(parts) >= 4:
+                device.pot_notch_snapwin = float(parts[3])
+
+        except Exception:
+            pass
+
+    def parse_pot_split_line(self, parts):
+        if len(parts) < 3:
+            return
+
+        head = parts[0].upper()
+
+        try:
+            pin = self.parse_pin(parts[1])
+        except Exception:
+            return
+
+        device = self.get_dump_pot_device(pin)
+        if device is None:
+            return
+
+        try:
+            if head == "POT.SPLIT" and len(parts) >= 3:
+                device.pot_split_mode = parts[2].upper()
+
+            elif head == "POT.SPLIT.DB" and len(parts) >= 3:
+                device.pot_split_deadband = float(parts[2])
+
+            elif head == "POT.SPLIT.CBIAS" and len(parts) >= 3:
+                device.pot_split_center_bias = float(parts[2])
+
+            elif head == "POT.SPLIT.TAG" and len(parts) >= 3:
+                device.pot_split_tag = parts[2]
+
+            elif head == "POT.SPLIT.TAGS" and len(parts) >= 4:
+                device.pot_split_tag_fwd = parts[2]
+                device.pot_split_tag_back = parts[3]
 
         except Exception:
             pass
@@ -611,34 +806,46 @@ class MainWindow(QMainWindow):
         for table in self.tables.values():
             table.setRowCount(0)
 
-        for device in self.devices:
-            table = self.tables.get(device.kind)
+        for kind, _title in self.kind_titles:
+            table = self.tables.get(kind)
 
             if not table:
                 continue
 
-            row = table.rowCount()
-            table.insertRow(row)
+            for device in self.get_table_devices(kind):
+                row = table.rowCount()
+                table.insertRow(row)
 
-            table.setItem(row, 0, QTableWidgetItem(str(device.pin)))
-            table.setItem(row, 1, QTableWidgetItem(device.name))
-            table.setItem(row, 2, QTableWidgetItem(str(device.value1)))
-            table.setItem(row, 3, QTableWidgetItem(str(device.value2)))
-            table.setItem(row, 4, QTableWidgetItem(device.send_mode))
-            table.setItem(row, 5, QTableWidgetItem(self.describe_options(device)))
+                if kind == "SELECTOR":
+                    pins_text, contacts_text, values_text = self.describe_selector_group(device)
+                    table.setItem(row, 0, QTableWidgetItem(pins_text))
+                    table.setItem(row, 1, QTableWidgetItem(device.name))
+                    table.setItem(row, 2, QTableWidgetItem(contacts_text))
+                    table.setItem(row, 3, QTableWidgetItem(""))
+                    table.setItem(row, 4, QTableWidgetItem(""))
+                    table.setItem(row, 5, QTableWidgetItem(f"Posiciones: {values_text}"))
+                else:
+                    table.setItem(row, 0, QTableWidgetItem(str(device.pin)))
+                    table.setItem(row, 1, QTableWidgetItem(device.name))
+                    table.setItem(row, 2, QTableWidgetItem(str(device.value1)))
+                    table.setItem(row, 3, QTableWidgetItem(str(device.value2)))
+                    table.setItem(row, 4, QTableWidgetItem(device.send_mode))
+                    table.setItem(row, 5, QTableWidgetItem(self.describe_options(device)))
 
-            btn_delete = QPushButton("✖")
-            btn_delete.setToolTip("Eliminar este elemento")
-            btn_delete.setStyleSheet(
-                "background-color: #c0392b;"
-                "color: white;"
-                "border-radius: 4px;"
-                "padding: 2px;"
-                "font-weight: bold;"
-            )
-            btn_delete.clicked.connect(lambda _, d=device: self.delete_device(d))
+                btn_delete = QPushButton("✖")
+                btn_delete.setToolTip(
+                    "Eliminar selector completo" if kind == "SELECTOR" else "Eliminar este elemento"
+                )
+                btn_delete.setStyleSheet(
+                    "background-color: #c0392b;"
+                    "color: white;"
+                    "border-radius: 4px;"
+                    "padding: 2px;"
+                    "font-weight: bold;"
+                )
+                btn_delete.clicked.connect(lambda _, d=device: self.delete_device(d))
 
-            table.setCellWidget(row, 6, btn_delete)
+                table.setCellWidget(row, 6, btn_delete)
 
     def describe_options(self, device):
         if device.kind == "POT":
@@ -649,9 +856,16 @@ class MainWindow(QMainWindow):
                 f"{'INT' if device.as_integer else 'FLOAT'}"
             )
 
+            threshold = getattr(device, "pot_threshold", 0.5)
+            text += f", thr={threshold:g}"
+
             if getattr(device, "pot_notches_enabled", False):
                 notches = getattr(device, "pot_notches", [])
                 text += f", muescas={len(notches)}"
+
+            split_mode = str(getattr(device, "pot_split_mode", "OFF")).upper()
+            if split_mode != "OFF":
+                text += f", split={split_mode}"
 
             return text
 
@@ -668,39 +882,150 @@ class MainWindow(QMainWindow):
 
         return self.kind_titles[index][0]
 
-    def delete_selected(self):
+    def get_selected_device_info(self):
         kind = self.current_kind()
 
         if kind is None:
-            QMessageBox.warning(self, "Eliminar", "Selecciona una tabla de controles.")
-            return
+            return None, None, None, None
 
         table = self.tables[kind]
         row = table.currentRow()
 
         if row < 0:
+            return kind, table, None, None
+
+        table_devices = self.get_table_devices(kind)
+
+        if row >= len(table_devices):
+            return kind, table, None, None
+
+        device = table_devices[row]
+        global_index = self.devices.index(device)
+        return kind, table, global_index, device
+
+    def replace_selector_group(self, original_device, edited_devices):
+        selector_devices = self.get_selector_group(original_device)
+        selector_ids = {id(device) for device in selector_devices}
+
+        if not selector_devices:
+            return
+
+        insert_at = min(
+            index for index, device in enumerate(self.devices)
+            if id(device) in selector_ids
+        )
+
+        remaining = [
+            device for device in self.devices
+            if id(device) not in selector_ids
+        ]
+
+        self.devices = (
+            remaining[:insert_at] +
+            edited_devices +
+            remaining[insert_at:]
+        )
+
+    def edit_selected(self):
+        kind, _table, global_index, device = self.get_selected_device_info()
+
+        if kind is None:
+            QMessageBox.warning(self, "Editar", "Selecciona una tabla de controles.")
+            return
+
+        if device is None:
+            QMessageBox.warning(self, "Editar", "Selecciona una fila.")
+            return
+
+        if kind == "SELECTOR":
+            selector_devices = self.get_selector_group(device)
+            wizard = DeviceWizard(
+                self.connection,
+                self.devices,
+                self,
+                parameter_catalog=self.parameter_catalog,
+                existing_selector_devices=selector_devices,
+            )
+        else:
+            wizard = DeviceWizard(
+                self.connection,
+                self.devices,
+                self,
+                parameter_catalog=self.parameter_catalog,
+                existing_device=device,
+            )
+
+        if not wizard.exec():
+            return
+
+        edited_devices = wizard.get_devices()
+        if not edited_devices:
+            return
+
+        for edited_device in edited_devices:
+            edited_device.kind = self.normalize_kind(edited_device.kind)
+
+        if kind == "SELECTOR":
+            self.replace_selector_group(device, edited_devices)
+            self.refresh_tables()
+            self.add_log(
+                f"Editado selector {edited_devices[0].name}: "
+                f"{len(edited_devices)} contactos"
+            )
+            return
+
+        edited_device = edited_devices[0]
+        self.devices[global_index] = edited_device
+        self.refresh_tables()
+        self.add_log(f"Editado {edited_device.kind}: pin={edited_device.pin}, name={edited_device.name}")
+
+    def delete_selected(self):
+        kind, _table, global_index, device = self.get_selected_device_info()
+
+        if kind is None:
+            QMessageBox.warning(self, "Eliminar", "Selecciona una tabla de controles.")
+            return
+
+        if device is None:
             QMessageBox.warning(self, "Eliminar", "Selecciona una fila.")
             return
 
-        filtered = [device for device in self.devices if device.kind == kind]
+        if kind == "SELECTOR":
+            if not self.confirm_delete_selector_group(device):
+                return
 
-        if row >= len(filtered):
+            selector_devices = self.get_selector_group(device)
+            selector_ids = {id(item) for item in selector_devices}
+            self.send_delete_selector_group(device)
+            self.devices = [item for item in self.devices if id(item) not in selector_ids]
+            self.refresh_tables()
+            self.add_log(f"Eliminado selector {device.name}: {len(selector_devices)} contactos")
             return
-
-        device = filtered[row]
 
         if not self.confirm_delete_device(device):
             return
 
         self.send_delete_command(device)
 
-        self.devices.remove(device)
+        del self.devices[global_index]
         self.refresh_tables()
 
         self.add_log(f"Eliminado {device.kind}: {device.name} (pin {device.pin})")
 
     def delete_device(self, device):
         if device not in self.devices:
+            return
+
+        if device.kind == "SELECTOR":
+            if not self.confirm_delete_selector_group(device):
+                return
+
+            selector_devices = self.get_selector_group(device)
+            selector_ids = {id(item) for item in selector_devices}
+            self.send_delete_selector_group(device)
+            self.devices = [item for item in self.devices if id(item) not in selector_ids]
+            self.refresh_tables()
+            self.add_log(f"Eliminado selector {device.name}: {len(selector_devices)} contactos")
             return
 
         if not self.confirm_delete_device(device):
@@ -752,6 +1077,13 @@ class MainWindow(QMainWindow):
 
     def send_commands(self):
         normal_commands = build_all_commands(self.devices)
+        has_pot_notches = any(
+            device.kind == "POT" and (
+                getattr(device, "pot_notches_enabled", False) or
+                str(getattr(device, "pot_split_mode", "OFF")).upper() != "OFF"
+            )
+            for device in self.devices
+        )
 
         modbus_commands = []
         if hasattr(self, "modbus_widget"):
@@ -767,6 +1099,9 @@ class MainWindow(QMainWindow):
 
         for command in normal_commands:
             self.connection.send_command(command)
+
+        if has_pot_notches:
+            self.connection.send_command("NOTCH SAVEALL")
 
         self.connection.send_command("#SAVE")
 

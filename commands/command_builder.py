@@ -61,6 +61,7 @@ def build_extra_commands(device):
         )
 
         commands.append(f"CFG {pin} SMOOTH {device.smooth:g}")
+        commands.append(f"CFG {pin} THRESH {getattr(device, 'pot_threshold', 0.5):g}")
 
         if device.send_mode == "INTERVALO":
             commands.append(f"CFG {pin} MODE INTERVALO {device.interval}")
@@ -68,6 +69,38 @@ def build_extra_commands(device):
             commands.append(f"CFG {pin} MODE {device.send_mode}")
 
         commands.append(f"CFG {pin} FORMAT {'INT' if device.as_integer else 'FLOAT'}")
+
+        if getattr(device, "pot_notches_enabled", False):
+            commands.append(f"NOTCH CLEAR {pin}")
+
+            for index, (raw_value, out_value) in enumerate(getattr(device, "pot_notches", [])):
+                commands.append(f"NOTCH ADD {pin} {out_value:g}")
+                if raw_value is not None:
+                    commands.append(f"NOTCH CENT {pin} {index} {raw_value}")
+
+            commands.append(f"NOTCH HYST {pin} {getattr(device, 'pot_notch_hyst', 0.05):g}")
+            commands.append(
+                f"NOTCH PARTIAL {pin} {'ON' if getattr(device, 'pot_notch_partial', False) else 'OFF'}"
+            )
+            commands.append(f"NOTCH SNAPWIN {pin} {getattr(device, 'pot_notch_snapwin', 0.03):g}")
+
+        split_mode = str(getattr(device, "pot_split_mode", "OFF")).upper()
+        if split_mode != "OFF":
+            commands.append(f"POT.SPLIT {pin} {split_mode}")
+            commands.append(f"POT.SPLIT.DB {pin} {getattr(device, 'pot_split_deadband', 0.02):g}")
+            commands.append(
+                f"POT.SPLIT.CBIAS {pin} {getattr(device, 'pot_split_center_bias', 0.5):g}"
+            )
+
+            tag_fwd = str(getattr(device, "pot_split_tag_fwd", "")).strip()
+            tag_back = str(getattr(device, "pot_split_tag_back", "")).strip()
+            tag_single = str(getattr(device, "pot_split_tag", "")).strip()
+
+            if split_mode == "DUAL" and tag_fwd and tag_back:
+                commands.append(f"POT.SPLIT.TAGS {pin} {tag_fwd} {tag_back}")
+
+            if tag_single:
+                commands.append(f"POT.SPLIT.TAG {pin} {tag_single}")
 
     return commands
 
