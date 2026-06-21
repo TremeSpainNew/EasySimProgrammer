@@ -21,8 +21,8 @@ Cambios recomendados:
 - Probar lectura real y simulada.
 
 Checklist:
-- [ ] Ajustar parser de `IO.STATE`
-- [ ] Unificar formato de pin para POT/ADS
+- [OK] Ajustar parser de `IO.STATE`
+- [OK] Unificar formato de pin para POT/ADS
 - [ ] Verificar wizard de prueba de pin
 - [ ] Verificar captura de valor en muescas
 
