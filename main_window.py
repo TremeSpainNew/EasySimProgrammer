@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QGroupBox
 )
 from PySide6.QtCore import QTimer
+from PySide6.QtGui import QAction
 
 from wizard.device_wizard import DeviceWizard
 from storage import save_devices, load_devices
@@ -16,6 +17,8 @@ from modbus.modbus_widget import ModbusWidget
 from module_wizard import ModuleWizard
 from manual_console import ManualConsole
 from widgets.serial_port_combobox import SerialPortComboBox
+from parameter_catalog import ParameterCatalog
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -23,6 +26,9 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("EasySim Programmer")
         self.resize(1200, 780)
+
+        self.parameter_catalog = ParameterCatalog()
+        self.create_menu()
 
         self.connection = ConnectionManager()
         self.connection.log.connect(self.add_log)
@@ -43,7 +49,7 @@ class MainWindow(QMainWindow):
             ("POT", "Potenciómetros"),
             ("SELECTOR", "Selectores"),
         ]
-        
+
         for kind, title in self.kind_titles:
             table = QTableWidget()
             table.setColumnCount(7)
@@ -57,6 +63,7 @@ class MainWindow(QMainWindow):
 
             self.tables[kind] = table
             self.tabs.addTab(table, title)
+
         self.modbus_widget = ModbusWidget(self.connection)
         self.tabs.addTab(self.modbus_widget, "Modbus")
 
@@ -99,9 +106,7 @@ class MainWindow(QMainWindow):
         self.connection_type = QComboBox()
         self.connection_type.addItems(["TCP", "Serial"])
         self.connection_type.setFixedWidth(80)
-        self.connection_type.currentTextChanged.connect(
-            self.on_connection_type_changed
-        )
+        self.connection_type.currentTextChanged.connect(self.on_connection_type_changed)
 
         self.ip_edit = QLineEdit()
         self.ip_edit.setPlaceholderText("IP dispositivo")
@@ -131,9 +136,11 @@ class MainWindow(QMainWindow):
         connection_row = QHBoxLayout()
         connection_row.setContentsMargins(8, 6, 8, 6)
         connection_row.setSpacing(8)
+
         connection_row.addWidget(self.sim_check)
         connection_row.addWidget(self.connection_type)
         connection_row.addWidget(self.auto_reconnect_check)
+
         self.lbl_ip = QLabel("IP:")
         self.lbl_port = QLabel("Puerto:")
         self.lbl_serial = QLabel("Serial:")
@@ -141,18 +148,16 @@ class MainWindow(QMainWindow):
 
         connection_row.addWidget(self.lbl_ip)
         connection_row.addWidget(self.ip_edit)
-
         connection_row.addWidget(self.lbl_port)
         connection_row.addWidget(self.port_spin)
-
         connection_row.addWidget(self.lbl_serial)
         connection_row.addWidget(self.serial_port_edit)
-
         connection_row.addWidget(self.lbl_baud)
         connection_row.addWidget(self.baud_spin)
         connection_row.addWidget(self.btn_connect)
         connection_row.addWidget(self.btn_disconnect)
         connection_row.addStretch()
+
         connection_box.setLayout(connection_row)
 
         button_row = QHBoxLayout()
@@ -194,40 +199,66 @@ class MainWindow(QMainWindow):
 
         root = QWidget()
         root.setLayout(layout)
-        self.on_connection_type_changed(
-            self.connection_type.currentText()
-        )
+
+        self.on_connection_type_changed(self.connection_type.currentText())
         self.setCentralWidget(root)
+
+    def create_menu(self):
+        file_menu = self.menuBar().addMenu("Archivo")
+
+        action_open_catalog = QAction("Abrir catálogo de controles JSON...", self)
+        action_open_catalog.triggered.connect(self.open_parameter_catalog)
+        file_menu.addAction(action_open_catalog)
+
+    def open_parameter_catalog(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Abrir catálogo de controles",
+            "",
+            "JSON (*.json)"
+        )
+
+        if not path:
+            return
+
+        try:
+            self.parameter_catalog.load(path)
+            self.add_log(
+                f"Catálogo cargado correctamente: "
+                f"{len(self.parameter_catalog.parameters)} controles."
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Error cargando catálogo",
+                str(e)
+            )
 
     def add_log(self, text):
         self.log.append(text)
-        
-    def normalize_kind(self, kind: str) -> str:
-            kind = str(kind).upper()
-        
-            mapping = {
-                "BOTON": "BUTTON",
-                "BOTÓN": "BUTTON",
-                "BUTTON": "BUTTON",
-        
-                "INTERRUPTOR": "SWITCH",
-                "SWITCH": "SWITCH",
-        
-                "SALIDA DIGITAL": "OUTPUT",
-                "OUTPUT": "OUTPUT",
-        
-                "POTENCIOMETRO": "POT",
-                "POTENCIÓMETRO": "POT",
-                "POT": "POT",
-        
-                "SELECTOR": "SELECTOR",
-            }
-        
-            return mapping.get(kind, kind)
 
-    # ==========================================================
-    # CONFIRMACIONES / BORRADO REAL
-    # ==========================================================
+    def normalize_kind(self, kind: str) -> str:
+        kind = str(kind).upper()
+
+        mapping = {
+            "BOTON": "BUTTON",
+            "BOTÓN": "BUTTON",
+            "BUTTON": "BUTTON",
+
+            "INTERRUPTOR": "SWITCH",
+            "SWITCH": "SWITCH",
+
+            "SALIDA DIGITAL": "OUTPUT",
+            "OUTPUT": "OUTPUT",
+
+            "POTENCIOMETRO": "POT",
+            "POTENCIÓMETRO": "POT",
+            "POT": "POT",
+
+            "SELECTOR": "SELECTOR",
+        }
+
+        return mapping.get(kind, kind)
 
     def confirm_delete_device(self, device):
         title = "Confirmar eliminación"
@@ -290,10 +321,6 @@ class MainWindow(QMainWindow):
         )
 
         return reply == QMessageBox.Yes
-
-    # ==========================================================
-    # DUMP PARSER
-    # ==========================================================
 
     def request_dump(self):
         self.dump_active = False
@@ -445,17 +472,14 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def parse_pin(self, text: str) -> int:
+    def parse_pin(self, text: str):
         text = text.strip().upper()
 
         if text.startswith("ADS"):
-            return 128 + int(text[3:])
+            return text
 
         return int(text)
 
-    # ==========================================================
-    # CONNECTION
-    # ==========================================================
     def on_connection_type_changed(self, mode):
         is_tcp = mode == "TCP"
 
@@ -524,32 +548,31 @@ class MainWindow(QMainWindow):
         if self.sim_check.isChecked():
             self.add_log("La simulación está activada.")
             return
-    
+
         mode = self.connection_type.currentText()
-    
         self.connection.auto_reconnect = self.auto_reconnect_check.isChecked()
-    
+
         if mode == "TCP":
             ip = self.ip_edit.text().strip()
             port = self.port_spin.value()
-    
+
             if not ip:
                 QMessageBox.warning(self, "TCP", "Introduce una IP.")
                 return
-    
+
             self.connection.connect_tcp(ip, port)
-    
+
         else:
             port_name = self.serial_port_edit.currentPort()
             baud = self.baud_spin.value()
-    
+
             if not port_name:
                 QMessageBox.warning(self, "Serial", "Introduce un puerto Serial.")
                 return
-    
+
             self.connection.auto_reconnect = False
             self.connection.connect_serial(port_name, baud)
-    
+
         self.sim_check.setChecked(self.connection.simulation)
 
     def disconnect(self):
@@ -558,12 +581,13 @@ class MainWindow(QMainWindow):
         self.connection.disconnect()
         self.add_log("Desconectado.")
 
-    # ==========================================================
-    # DEVICES
-    # ==========================================================
-
     def add_device(self):
-        wizard = DeviceWizard(self.connection, self.devices, self)
+        wizard = DeviceWizard(
+            self.connection,
+            self.devices,
+            self,
+            parameter_catalog=self.parameter_catalog
+        )
 
         if wizard.exec():
             devices = wizard.get_devices()
@@ -618,12 +642,18 @@ class MainWindow(QMainWindow):
 
     def describe_options(self, device):
         if device.kind == "POT":
-            return (
+            text = (
                 f"{device.min_in}-{device.max_in} → "
                 f"{device.min_out}-{device.max_out}, "
                 f"smooth={device.smooth}, "
                 f"{'INT' if device.as_integer else 'FLOAT'}"
             )
+
+            if getattr(device, "pot_notches_enabled", False):
+                notches = getattr(device, "pot_notches", [])
+                text += f", muescas={len(notches)}"
+
+            return text
 
         if device.kind == "SELECTOR":
             return f"Posición selector = {device.value1:g}"
@@ -632,10 +662,19 @@ class MainWindow(QMainWindow):
 
     def current_kind(self):
         index = self.tabs.currentIndex()
+
+        if index >= len(self.kind_titles):
+            return None
+
         return self.kind_titles[index][0]
 
     def delete_selected(self):
         kind = self.current_kind()
+
+        if kind is None:
+            QMessageBox.warning(self, "Eliminar", "Selecciona una tabla de controles.")
+            return
+
         table = self.tables[kind]
         row = table.currentRow()
 
@@ -673,10 +712,6 @@ class MainWindow(QMainWindow):
         self.refresh_tables()
 
         self.add_log(f"Eliminado {device.kind}: {device.name} (pin {device.pin})")
-
-    # ==========================================================
-    # FILES / COMMANDS
-    # ==========================================================
 
     def save_json(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -735,7 +770,6 @@ class MainWindow(QMainWindow):
 
         self.connection.send_command("#SAVE")
 
-        # Modbus: limpiar siempre antes de reenviar
         if hasattr(self, "modbus_widget"):
             self.connection.send_command("MB.CLEAR")
 
@@ -747,7 +781,7 @@ class MainWindow(QMainWindow):
         self.connection.send_command("#END")
 
         self.add_log("Configuración completa enviada.")
-    
+
     def open_module_wizard(self):
         wizard = ModuleWizard(devices=self.devices, parent=self)
 
@@ -768,7 +802,7 @@ class MainWindow(QMainWindow):
                     f"Añadido desde módulo {device.kind}: "
                     f"pin={device.pin}, name={device.name}"
                 )
-    
+
     def open_console(self):
         dlg = ManualConsole(self.connection, self)
         dlg.exec()

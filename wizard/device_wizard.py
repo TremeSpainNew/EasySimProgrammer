@@ -21,11 +21,18 @@ PAGE_SUMMARY = 5
 class TypePage(QWizardPage):
     def __init__(self):
         super().__init__()
+
         self.setTitle("Tipo de elemento")
         self.setSubTitle("Selecciona qué tipo de control quieres configurar.")
 
         self.kind = QComboBox()
-        self.kind.addItems(["BOTON", "INTERRUPTOR", "SALIDA DIGITAL", "POTENCIOMETRO", "SELECTOR"])
+        self.kind.addItems([
+            "BUTTON",
+            "SWITCH",
+            "OUTPUT",
+            "POT",
+            "SELECTOR"
+        ])
 
         label = QLabel("Tipo de elemento:")
         label.setAlignment(Qt.AlignCenter)
@@ -35,6 +42,7 @@ class TypePage(QWizardPage):
         layout.addWidget(label)
         layout.addWidget(self.kind)
         layout.addStretch()
+
         self.setLayout(layout)
 
     def nextId(self):
@@ -44,33 +52,41 @@ class TypePage(QWizardPage):
 class BasicPage(QWizardPage):
     def __init__(self):
         super().__init__()
+
         self.setTitle("Datos básicos")
-        self.setSubTitle("Introduce el pin/canal y el nombre/parámetro.")
+        self.setSubTitle("Introduce el pin/canal y el parámetro.")
 
         self.pin_label = QLabel("Pin:")
+
         self.pin = QSpinBox()
         self.pin.setRange(0, 255)
 
-        self.name = QLineEdit()
-        self.name.setPlaceholderText("Ejemplo: PZB_ACK, SIFA_LED, SPEED...")
+        self.name = QComboBox()
+        self.name.setEditable(True)
+        self.name.setInsertPolicy(QComboBox.NoInsert)
+        self.name.lineEdit().setPlaceholderText(
+            "Ejemplo: controller::throttle, asfa::reconocer..."
+        )
 
         self.warning = QLabel("")
         self.warning.setStyleSheet("color: #d9534f; font-weight: bold;")
         self.warning.setWordWrap(True)
 
         self.pin.valueChanged.connect(lambda _value: self.completeChanged.emit())
-        self.name.textChanged.connect(lambda _text: self.completeChanged.emit())
+        self.name.currentTextChanged.connect(lambda _text: self.completeChanged.emit())
+        self.name.lineEdit().textChanged.connect(lambda _text: self.completeChanged.emit())
 
         form = QFormLayout()
         form.addRow(self.pin_label, self.pin)
-        form.addRow("Nombre / parámetro:", self.name)
+        form.addRow("Parámetro:", self.name)
         form.addRow("", self.warning)
+
         self.setLayout(form)
 
     def initializePage(self):
         kind = self.wizard().page(PAGE_TYPE).kind.currentText()
 
-        if kind == "POTENCIOMETRO":
+        if kind == "POT":
             self.pin_label.setText("Canal ADS:")
             self.pin.setRange(0, 7)
             self.pin.setPrefix("ADS")
@@ -82,42 +98,67 @@ class BasicPage(QWizardPage):
         visible = kind != "SELECTOR"
         self.pin_label.setVisible(visible)
         self.pin.setVisible(visible)
+
+        catalog = getattr(self.wizard(), "parameter_catalog", None)
+
+        if catalog:
+            current = self.name.currentText().strip()
+
+            self.name.blockSignals(True)
+            self.name.clear()
+            self.name.addItems(catalog.names_for_kind(kind))
+
+            if current:
+                self.name.setCurrentText(current)
+
+            self.name.blockSignals(False)
+
         self.completeChanged.emit()
 
     def get_pin_token(self):
         kind = self.wizard().page(PAGE_TYPE).kind.currentText()
-        if kind == "POTENCIOMETRO":
+
+        if kind == "POT":
             return f"ADS{self.pin.value()}"
+
         return self.pin.value()
+
+    def get_name(self):
+        return self.name.currentText().strip()
 
     def isComplete(self):
         wizard = self.wizard()
         kind = wizard.page(PAGE_TYPE).kind.currentText()
-        name = self.name.text().strip()
+
+        name = self.get_name()
         pin_token = self.get_pin_token()
 
         if not name:
-            self.warning.setText("Introduce un nombre/parámetro.")
+            self.warning.setText("Introduce o selecciona un parámetro.")
             return False
 
-        if kind != "SELECTOR" and hasattr(wizard, "is_pin_used"):
-            if wizard.is_pin_used(pin_token):
-                self.warning.setText(f"El pin/canal {pin_token} ya está en uso.")
-                return False
+        if kind != "SELECTOR":
+            if wizard and hasattr(wizard, "is_pin_used"):
+                if wizard.is_pin_used(pin_token):
+                    self.warning.setText(f"El pin/canal {pin_token} ya está en uso.")
+                    return False
 
         self.warning.setText("")
         return True
 
     def nextId(self):
         kind = self.wizard().page(PAGE_TYPE).kind.currentText()
+
         if kind == "SELECTOR":
             return PAGE_SELECTOR
+
         return PAGE_TEST
 
 
 class TestPage(QWizardPage):
     def __init__(self, connection):
         super().__init__()
+
         self.setTitle("Comprobar pin")
         self.setSubTitle("Comprueba físicamente que el pin seleccionado es correcto.")
 
@@ -132,6 +173,7 @@ class TestPage(QWizardPage):
         layout = QVBoxLayout()
         layout.addWidget(self.info)
         layout.addWidget(self.tester)
+
         self.setLayout(layout)
 
     def initializePage(self):
@@ -156,6 +198,7 @@ class TestPage(QWizardPage):
 class OptionsPage(QWizardPage):
     def __init__(self):
         super().__init__()
+
         self.setTitle("Opciones")
         self.setSubTitle("Configura los valores y comportamiento del elemento.")
 
@@ -197,7 +240,12 @@ class OptionsPage(QWizardPage):
         self.smooth.setValue(0.10)
 
         self.send_mode = QComboBox()
-        self.send_mode.addItems(["CONTINUO", "CAMBIO", "INTERVALO", "MANUAL"])
+        self.send_mode.addItems([
+            "CONTINUO",
+            "CAMBIO",
+            "INTERVALO",
+            "MANUAL"
+        ])
 
         self.interval = QSpinBox()
         self.interval.setRange(0, 60000)
@@ -248,11 +296,13 @@ class OptionsPage(QWizardPage):
         self.form.addRow("Nº muescas:", self.notch_count)
         self.form.addRow("Tabla muescas:", self.notch_table)
         self.form.addRow("", self.notch_warning)
+
         self.setLayout(self.form)
 
     def initializePage(self):
         wizard = self.wizard()
         kind = wizard.page(PAGE_TYPE).kind.currentText()
+
         is_pot = kind == "POT"
 
         test_page = wizard.page(PAGE_TEST)
@@ -277,7 +327,10 @@ class OptionsPage(QWizardPage):
             "Tabla muescas:",
         }
 
-        rows_for_normal = {"Valor 1:", "Valor 2:"}
+        rows_for_normal = {
+            "Valor 1:",
+            "Valor 2:",
+        }
 
         for i in range(self.form.rowCount()):
             label_item = self.form.itemAt(i, QFormLayout.LabelRole)
@@ -285,6 +338,7 @@ class OptionsPage(QWizardPage):
 
             label = label_item.widget() if label_item else None
             field = field_item.widget() if field_item else None
+
             text = label.text() if label else ""
 
             if text in rows_for_pot:
@@ -307,10 +361,13 @@ class OptionsPage(QWizardPage):
             else:
                 if field == self.as_integer:
                     field.setVisible(is_pot)
+
                 elif field == self.enable_notches:
                     field.setVisible(is_pot)
+
                 elif field == self.live_value_label:
                     field.setVisible(is_pot and self.enable_notches.isChecked())
+
                 elif field == self.notch_warning:
                     field.setVisible(is_pot and self.enable_notches.isChecked())
 
@@ -324,6 +381,7 @@ class OptionsPage(QWizardPage):
         count = self.notch_count.value()
 
         old = []
+
         for row in range(self.notch_table.rowCount()):
             pot_item = self.notch_table.item(row, 0)
             out_item = self.notch_table.item(row, 2)
@@ -498,6 +556,7 @@ class SelectorPage(QWizardPage):
         layout.addLayout(form)
         layout.addWidget(self.table)
         layout.addWidget(self.warning)
+
         self.setLayout(layout)
 
     def initializePage(self):
@@ -511,6 +570,7 @@ class SelectorPage(QWizardPage):
         for row in range(self.table.rowCount()):
             pin_item = self.table.item(row, 0)
             value_item = self.table.item(row, 1)
+
             old.append((
                 pin_item.text() if pin_item else "",
                 value_item.text() if value_item else "",
@@ -612,6 +672,7 @@ class SummaryPage(QWizardPage):
 
         layout = QVBoxLayout()
         layout.addWidget(self.label)
+
         self.setLayout(layout)
 
     def initializePage(self):
@@ -626,7 +687,7 @@ class SummaryPage(QWizardPage):
 
             lines = [
                 "Tipo: SELECTOR",
-                f"Nombre: {basic.name.text().strip()}",
+                f"Nombre: {basic.get_name()}",
                 "",
                 "Contactos:"
             ]
@@ -641,7 +702,7 @@ class SummaryPage(QWizardPage):
             lines = [
                 f"Tipo: {kind}",
                 f"Pin: {basic.get_pin_token()}",
-                f"Nombre: {basic.name.text()}",
+                f"Nombre: {basic.get_name()}",
                 "",
                 f"Entrada: {options.min_in.value()} - {options.max_in.value()}",
                 f"Salida: {options.min_out.value()} - {options.max_out.value()}",
@@ -654,6 +715,7 @@ class SummaryPage(QWizardPage):
             if options.enable_notches.isChecked():
                 lines.append("")
                 lines.append("Muescas:")
+
                 for pot_value, out_value in options.get_notches():
                     lines.append(f"  POT {pot_value} -> {out_value:g}")
 
@@ -663,7 +725,7 @@ class SummaryPage(QWizardPage):
         text = (
             f"Tipo: {kind}\n"
             f"Pin: {basic.get_pin_token()}\n"
-            f"Nombre: {basic.name.text()}\n\n"
+            f"Nombre: {basic.get_name()}\n\n"
             f"Valor 1: {options.value1.value()}\n"
             f"Valor 2: {options.value2.value()}"
         )
@@ -675,11 +737,12 @@ class SummaryPage(QWizardPage):
 
 
 class DeviceWizard(QWizard):
-    def __init__(self, connection, devices=None, parent=None):
+    def __init__(self, connection, devices=None, parent=None, parameter_catalog=None):
         super().__init__(parent)
 
         self.connection = connection
         self.devices = devices or []
+        self.parameter_catalog = parameter_catalog
 
         self.setWindowTitle("Asistente EasySim")
         self.resize(760, 560)
@@ -698,6 +761,7 @@ class DeviceWizard(QWizard):
         self.setPage(PAGE_SUMMARY, SummaryPage())
 
         self.setStartId(PAGE_TYPE)
+
         self.connection.received.connect(self.on_received)
 
     def on_received(self, text):
@@ -731,6 +795,7 @@ class DeviceWizard(QWizard):
 
     def stop_test_page(self):
         page = self.page(PAGE_TEST)
+
         if page and hasattr(page, "stop_tester"):
             page.stop_tester()
 
@@ -754,8 +819,9 @@ class DeviceWizard(QWizard):
         basic = self.page(PAGE_BASIC)
 
         if kind == "SELECTOR":
-            name = basic.name.text().strip()
+            name = basic.get_name()
             contacts = self.page(PAGE_SELECTOR).get_contacts()
+
             devices = []
 
             for pin, value in contacts:
@@ -778,7 +844,7 @@ class DeviceWizard(QWizard):
         device = Device(
             kind=kind,
             pin=basic.get_pin_token(),
-            name=basic.name.text().strip(),
+            name=basic.get_name(),
 
             value1=options.value1.value(),
             value2=options.value2.value(),
