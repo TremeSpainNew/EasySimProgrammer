@@ -48,6 +48,7 @@ class MainWindow(QMainWindow):
             ("OUTPUT", "Salidas / LEDs"),
             ("POT", "Potenciómetros"),
             ("SELECTOR", "Selectores"),
+            ("CANBUS", "CAN bus"),
         ]
 
         for kind, title in self.kind_titles:
@@ -259,6 +260,8 @@ class MainWindow(QMainWindow):
             "POT": "POT",
 
             "SELECTOR": "SELECTOR",
+            "CAN BUS": "CANBUS",
+            "CANBUS": "CANBUS",
         }
 
         return mapping.get(kind, kind)
@@ -272,6 +275,14 @@ class MainWindow(QMainWindow):
                 f"Selector: {device.name}\n"
                 f"Pin: {device.pin}\n"
                 f"Valor: {device.value1:g}\n\n"
+                f"¿Quieres continuar?"
+            )
+        elif device.kind == "CANBUS":
+            message = (
+                f"Vas a eliminar este elemento CAN:\n\n"
+                f"Subtipo: {getattr(device, 'can_kind', 'BUTTON')}\n"
+                f"Nombre: {device.name}\n"
+                f"Canal: {device.pin}\n\n"
                 f"¿Quieres continuar?"
             )
         else:
@@ -360,6 +371,9 @@ class MainWindow(QMainWindow):
     def build_delete_command(self, device):
         if device.kind == "SELECTOR":
             return f"SEL.DELPIN {device.pin}"
+
+        if device.kind == "CANBUS":
+            return f"#DELETEPIN CAN{device.can_node}:{device.can_channel}"
 
         return f"#DELETEPIN {device.pin}"
 
@@ -473,9 +487,31 @@ class MainWindow(QMainWindow):
         name = parts[3]
 
         try:
-            pin = self.parse_pin(pin_text)
             value1 = float(parts[4])
             value2 = float(parts[5]) if len(parts) > 5 else 1
+        except Exception:
+            return
+
+        try:
+            if pin_text.strip().upper().startswith("CAN") and kind in ("BUTTON", "SWITCH", "OUTPUT"):
+                can_node, can_channel = self.parse_can_ref(pin_text)
+                pin = f"CAN{can_node}:{can_channel}"
+                device = Device(
+                    kind="CANBUS",
+                    pin=pin,
+                    name=name,
+                    can_kind=kind,
+                    can_node=can_node,
+                    can_channel=can_channel,
+                    value1=value1,
+                    value2=value2,
+                    min_out=value1,
+                    max_out=value2,
+                )
+                self.dump_devices[("CANBUS", can_node, can_channel, name)] = device
+                return
+
+            pin = self.parse_pin(pin_text)
         except Exception:
             return
 
@@ -667,8 +703,22 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def parse_can_ref(self, text: str):
+        raw = text.strip().upper()
+
+        if not raw.startswith("CAN") or ":" not in raw:
+            raise ValueError("Referencia CAN inválida")
+
+        body = raw[3:]
+        node_text, channel_text = body.split(":", 1)
+
+        return int(node_text), int(channel_text)
+
     def parse_pin(self, text: str):
         text = text.strip().upper()
+
+        if text.startswith("CAN"):
+            return text
 
         if text.startswith("ADS"):
             return text
@@ -824,6 +874,17 @@ class MainWindow(QMainWindow):
                     table.setItem(row, 3, QTableWidgetItem(""))
                     table.setItem(row, 4, QTableWidgetItem(""))
                     table.setItem(row, 5, QTableWidgetItem(f"Posiciones: {values_text}"))
+                elif kind == "CANBUS":
+                    table.setItem(row, 0, QTableWidgetItem(str(device.pin)))
+                    table.setItem(row, 1, QTableWidgetItem(device.name))
+                    table.setItem(
+                        row,
+                        2,
+                        QTableWidgetItem(str(getattr(device, "can_kind", "BUTTON"))),
+                    )
+                    table.setItem(row, 3, QTableWidgetItem(""))
+                    table.setItem(row, 4, QTableWidgetItem(""))
+                    table.setItem(row, 5, QTableWidgetItem(self.describe_options(device)))
                 else:
                     table.setItem(row, 0, QTableWidgetItem(str(device.pin)))
                     table.setItem(row, 1, QTableWidgetItem(device.name))
@@ -871,6 +932,13 @@ class MainWindow(QMainWindow):
 
         if device.kind == "SELECTOR":
             return f"Posición selector = {device.value1:g}"
+
+        if device.kind == "CANBUS":
+            return (
+                f"subtipo={getattr(device, 'can_kind', 'BUTTON')}, "
+                f"nodo={getattr(device, 'can_node', 0)}, "
+                f"canal={getattr(device, 'can_channel', 0)}"
+            )
 
         return ""
 

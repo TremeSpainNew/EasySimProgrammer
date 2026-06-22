@@ -23,6 +23,7 @@ KIND_LABELS = {
     "OUTPUT": "Salida Digital",
     "POT": "Potenciometro",
     "SELECTOR": "Selector",
+    "CANBUS": "CAN bus",
 }
 
 
@@ -43,6 +44,7 @@ class TypePage(QWizardPage):
         self.kind.addItem(kind_label("OUTPUT"), "OUTPUT")
         self.kind.addItem(kind_label("POT"), "POT")
         self.kind.addItem(kind_label("SELECTOR"), "SELECTOR")
+        self.kind.addItem(kind_label("CANBUS"), "CANBUS")
 
         label = QLabel("Tipo de elemento:")
         label.setAlignment(Qt.AlignCenter)
@@ -88,6 +90,17 @@ class BasicPage(QWizardPage):
         self.pin = QSpinBox()
         self.pin.setRange(0, 255)
 
+        self.can_kind = QComboBox()
+        self.can_kind.addItem(kind_label("BUTTON"), "BUTTON")
+        self.can_kind.addItem(kind_label("SWITCH"), "SWITCH")
+        self.can_kind.addItem(kind_label("OUTPUT"), "OUTPUT")
+
+        self.can_node = QSpinBox()
+        self.can_node.setRange(0, 255)
+
+        self.can_channel = QSpinBox()
+        self.can_channel.setRange(0, 255)
+
         self.name = QComboBox()
         self.name.setEditable(True)
         self.name.setInsertPolicy(QComboBox.NoInsert)
@@ -100,19 +113,55 @@ class BasicPage(QWizardPage):
         self.warning.setWordWrap(True)
 
         self.pin.valueChanged.connect(lambda _value: self.completeChanged.emit())
+        self.can_kind.currentTextChanged.connect(self.on_can_kind_changed)
+        self.can_node.valueChanged.connect(lambda _value: self.completeChanged.emit())
+        self.can_channel.valueChanged.connect(lambda _value: self.completeChanged.emit())
         self.name.currentTextChanged.connect(lambda _text: self.completeChanged.emit())
         self.name.lineEdit().textChanged.connect(lambda _text: self.completeChanged.emit())
 
-        form = QFormLayout()
-        form.addRow(self.pin_label, self.pin)
-        form.addRow("Parámetro:", self.name)
-        form.addRow("", self.warning)
+        self.form = QFormLayout()
+        self.form.addRow(self.pin_label, self.pin)
+        self.form.addRow("Tipo CAN:", self.can_kind)
+        self.form.addRow("Nodo CAN:", self.can_node)
+        self.form.addRow("Canal CAN:", self.can_channel)
+        self.form.addRow("Parámetro:", self.name)
+        self.form.addRow("", self.warning)
 
-        self.setLayout(form)
+        self.setLayout(self.form)
         self._prefilled = False
+
+    def current_parameter_kind(self):
+        kind = self.wizard().page(PAGE_TYPE).current_kind()
+
+        if kind != "CANBUS":
+            return kind
+
+        return self.can_kind.currentData() or self.can_kind.currentText()
+
+    def refresh_catalog(self):
+        catalog = getattr(self.wizard(), "parameter_catalog", None)
+
+        if not catalog:
+            return
+
+        current = self.name.currentText().strip()
+
+        self.name.blockSignals(True)
+        self.name.clear()
+        self.name.addItems(catalog.names_for_kind(self.current_parameter_kind()))
+
+        if current:
+            self.name.setCurrentText(current)
+
+        self.name.blockSignals(False)
+
+    def on_can_kind_changed(self, _text):
+        self.refresh_catalog()
+        self.completeChanged.emit()
 
     def initializePage(self):
         kind = self.wizard().page(PAGE_TYPE).current_kind()
+        is_can = kind == "CANBUS"
 
         if kind == "POT":
             self.pin_label.setText("Canal ADS:")
@@ -123,28 +172,29 @@ class BasicPage(QWizardPage):
             self.pin.setRange(0, 255)
             self.pin.setPrefix("")
 
-        visible = kind != "SELECTOR"
+        visible = kind not in ("SELECTOR", "CANBUS")
         self.pin_label.setVisible(visible)
         self.pin.setVisible(visible)
+        self.can_kind.setVisible(is_can)
+        self.can_node.setVisible(is_can)
+        self.can_channel.setVisible(is_can)
+        self.form.labelForField(self.can_kind).setVisible(is_can)
+        self.form.labelForField(self.can_node).setVisible(is_can)
+        self.form.labelForField(self.can_channel).setVisible(is_can)
 
-        catalog = getattr(self.wizard(), "parameter_catalog", None)
-
-        if catalog:
-            current = self.name.currentText().strip()
-
-            self.name.blockSignals(True)
-            self.name.clear()
-            self.name.addItems(catalog.names_for_kind(kind))
-
-            if current:
-                self.name.setCurrentText(current)
-
-            self.name.blockSignals(False)
+        self.refresh_catalog()
 
         device = getattr(self.wizard(), "existing_device", None)
         if device and not self._prefilled and str(device.kind).upper() == kind:
             if kind == "POT" and str(device.pin).upper().startswith("ADS"):
                 self.pin.setValue(int(str(device.pin).upper()[3:]))
+            elif kind == "CANBUS":
+                can_kind = str(getattr(device, "can_kind", "BUTTON")).upper()
+                index = self.can_kind.findData(can_kind)
+                if index >= 0:
+                    self.can_kind.setCurrentIndex(index)
+                self.can_node.setValue(int(getattr(device, "can_node", 0)))
+                self.can_channel.setValue(int(getattr(device, "can_channel", 0)))
             elif kind != "SELECTOR":
                 self.pin.setValue(int(device.pin))
 
@@ -159,7 +209,13 @@ class BasicPage(QWizardPage):
         if kind == "POT":
             return f"ADS{self.pin.value()}"
 
+        if kind == "CANBUS":
+            return f"CAN{self.can_node.value()}:{self.can_channel.value()}"
+
         return self.pin.value()
+
+    def get_can_kind(self):
+        return self.can_kind.currentData() or self.can_kind.currentText()
 
     def get_name(self):
         return self.name.currentText().strip()
@@ -180,6 +236,13 @@ class BasicPage(QWizardPage):
                 if wizard.is_selector_name_used(name):
                     self.warning.setText("Ya existe otro selector con ese nombre.")
                     return False
+        elif kind == "CANBUS":
+            if wizard and hasattr(wizard, "is_can_used"):
+                if wizard.is_can_used(self.can_node.value(), self.can_channel.value()):
+                    self.warning.setText(
+                        f"El CAN{self.can_node.value()}:{self.can_channel.value()} ya está en uso."
+                    )
+                    return False
         else:
             if wizard and hasattr(wizard, "is_pin_used"):
                 if wizard.is_pin_used(pin_token):
@@ -194,6 +257,9 @@ class BasicPage(QWizardPage):
 
         if kind == "SELECTOR":
             return PAGE_SELECTOR
+
+        if kind == "CANBUS":
+            return PAGE_SUMMARY
 
         return PAGE_TEST
 
@@ -223,6 +289,11 @@ class TestPage(QWizardPage):
         wizard = self.wizard()
         kind = wizard.page(PAGE_TYPE).current_kind()
         pin_token = wizard.page(PAGE_BASIC).get_pin_token()
+
+        if kind == "CANBUS":
+            self.tester.stop()
+            return
+
         self.tester.set_target(pin_token, kind)
 
     def cleanupPage(self):
@@ -882,6 +953,17 @@ class SummaryPage(QWizardPage):
             self.label.setText("\n".join(lines))
             return
 
+        if kind == "CANBUS":
+            lines = [
+                f"Tipo: {kind_label(kind)}",
+                f"Subtipo: {kind_label(basic.get_can_kind())}",
+                f"Referencia: {basic.get_pin_token()}",
+                f"Nombre: {basic.get_name()}",
+            ]
+
+            self.label.setText("\n".join(lines))
+            return
+
         if kind == "POT":
             lines = [
                 f"Tipo: {kind_label(kind)}",
@@ -1053,6 +1135,20 @@ class DeviceWizard(QWizard):
 
         return False
 
+    def is_can_used(self, node, channel):
+        for device in self.devices:
+            if device is self.existing_device:
+                continue
+            if device in self.existing_selector_devices:
+                continue
+            if str(device.kind).upper() != "CANBUS":
+                continue
+            if int(getattr(device, "can_node", -1)) == int(node) and int(
+                getattr(device, "can_channel", -1)
+            ) == int(channel):
+                return True
+        return False
+
     def get_devices(self):
         kind = self.page(PAGE_TYPE).current_kind()
         basic = self.page(PAGE_BASIC)
@@ -1077,6 +1173,20 @@ class DeviceWizard(QWizard):
                 )
 
             return devices
+
+        if kind == "CANBUS":
+            return [
+                Device(
+                    kind="CANBUS",
+                    pin=basic.get_pin_token(),
+                    name=basic.get_name(),
+                    can_kind=basic.get_can_kind(),
+                    can_node=basic.can_node.value(),
+                    can_channel=basic.can_channel.value(),
+                    value1=0,
+                    value2=1,
+                )
+            ]
 
         options = self.page(PAGE_OPTIONS)
 

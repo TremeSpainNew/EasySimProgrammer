@@ -5,9 +5,36 @@ from typing import Union
 PinValue = Union[int, str]
 
 
+def parse_can_ref(pin) -> tuple[int, int] | None:
+    if not isinstance(pin, str):
+        return None
+
+    text = pin.strip().upper()
+
+    if not text.startswith("CAN"):
+        return None
+
+    body = text[3:]
+
+    if ":" not in body:
+        raise ValueError(f"Referencia CAN invalida: {pin}")
+
+    node_text, channel_text = body.split(":", 1)
+
+    if not node_text.isdigit() or not channel_text.isdigit():
+        raise ValueError(f"Referencia CAN invalida: {pin}")
+
+    return int(node_text), int(channel_text)
+
+
 def parse_pin_value(pin) -> PinValue:
     if isinstance(pin, str):
         text = pin.strip().upper()
+
+        can_ref = parse_can_ref(text)
+        if can_ref is not None:
+            node, channel = can_ref
+            return f"CAN{node}:{channel}"
 
         if text.startswith("ADS"):
             channel = text[3:]
@@ -51,6 +78,9 @@ class Device:
     kind: str
     pin: PinValue
     name: str
+    can_kind: str = "BUTTON"
+    can_node: int = 0
+    can_channel: int = 0
 
     value1: float = 0
     value2: float = 1
@@ -82,10 +112,25 @@ class Device:
 
     @staticmethod
     def from_dict(data):
+        kind = str(data.get("kind", "BUTTON")).upper()
+        pin = parse_pin_value(data.get("pin", 0))
+
+        can_kind = str(data.get("can_kind", "BUTTON")).upper()
+        can_node = int(data.get("can_node", 0))
+        can_channel = int(data.get("can_channel", 0))
+
+        if kind == "CANBUS":
+            can_ref = parse_can_ref(pin)
+            if can_ref is not None:
+                can_node, can_channel = can_ref
+
         return Device(
-            kind=data.get("kind", "BUTTON"),
-            pin=parse_pin_value(data.get("pin", 0)),
+            kind=kind,
+            pin=pin,
             name=data.get("name", ""),
+            can_kind=can_kind,
+            can_node=can_node,
+            can_channel=can_channel,
 
             value1=float(data.get("value1", 0)),
             value2=float(data.get("value2", 1)),

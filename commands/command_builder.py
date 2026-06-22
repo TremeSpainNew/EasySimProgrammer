@@ -21,6 +21,8 @@ def normalize_kind(kind: str) -> str:
         "POT": "POT",
 
         "SELECTOR": "SELECTOR",
+        "CAN BUS": "CANBUS",
+        "CANBUS": "CANBUS",
     }
 
     return mapping.get(kind, kind)
@@ -44,6 +46,15 @@ def build_add_command(device):
 
     if kind == "SELECTOR":
         return f"SEL.ADD {device.name} {pin} {device.value1:g}"
+
+    if kind == "CANBUS":
+        can_kind = normalize_kind(getattr(device, "can_kind", "BUTTON"))
+        can_node = int(getattr(device, "can_node", 0))
+        can_channel = int(getattr(device, "can_channel", 0))
+        return (
+            f"ADD {can_kind} CAN{can_node}:{can_channel} "
+            f"{device.name} {device.value1:g} {device.value2:g}"
+        )
 
     return ""
 

@@ -21,6 +21,8 @@ class ParameterCatalog:
             write_required = True
         elif kind == "OUTPUT":
             write_required = False
+        elif kind == "CANBUS":
+            write_required = None
         else:
             write_required = None
 
