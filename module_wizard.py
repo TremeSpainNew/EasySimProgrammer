@@ -11,13 +11,16 @@ from PySide6.QtCore import Qt
 from models.device import Device
 
 
+MODULES_DIR = Path(__file__).resolve().parent / "modules"
+
+
 PAGE_SELECT_MODULE = 0
 PAGE_EDIT_IO = 1
 PAGE_SUMMARY = 2
 
 
 class SelectModulePage(QWizardPage):
-    def __init__(self, modules_dir="modules"):
+    def __init__(self, modules_dir=MODULES_DIR):
         super().__init__()
 
         self.modules_dir = Path(modules_dir)
@@ -90,19 +93,24 @@ class EditIOPage(QWizardPage):
         super().__init__()
 
         self.setTitle("Asignación de entradas/salidas")
-        self.setSubTitle("Revisa o modifica los pines del módulo.")
+        self.setSubTitle("Revisa o modifica los canales CAN del módulo.")
 
-        self.pin_base = QSpinBox()
-        self.pin_base.setRange(0, 255)
-        self.pin_base.setValue(0)
-        self.pin_base.valueChanged.connect(self.apply_pin_base)
+        self.can_node = QSpinBox()
+        self.can_node.setRange(0, 255)
+        self.can_node.setValue(0)
+        self.can_node.valueChanged.connect(lambda _value: self.completeChanged.emit())
+
+        self.channel_base = QSpinBox()
+        self.channel_base.setRange(0, 255)
+        self.channel_base.setValue(0)
+        self.channel_base.valueChanged.connect(self.apply_channel_base)
 
         self.table = QTableWidget()
         self.table.setColumnCount(5)
         self.table.setHorizontalHeaderLabels([
             "Tipo",
             "Nombre",
-            "Pin",
+            "Canal",
             "Valor 1",
             "Valor 2"
         ])
@@ -114,7 +122,8 @@ class EditIOPage(QWizardPage):
         self.warning.setWordWrap(True)
 
         form = QFormLayout()
-        form.addRow("Pin base:", self.pin_base)
+        form.addRow("Nodo CAN:", self.can_node)
+        form.addRow("Canal base:", self.channel_base)
 
         layout = QVBoxLayout()
         layout.addLayout(form)
@@ -141,28 +150,28 @@ class EditIOPage(QWizardPage):
         self.table.blockSignals(True)
         self.table.setRowCount(len(self.raw_devices))
 
-        base = self.pin_base.value()
+        base = self.channel_base.value()
 
         for row, item in enumerate(self.raw_devices):
             kind = item.get("kind", "BUTTON")
             name = item.get("name", "")
-            pin = item.get("pin", item.get("offset", row))
+            channel = item.get("pin", item.get("offset", row))
             value1 = item.get("value1", 1)
             value2 = item.get("value2", 0)
 
             if "offset" in item:
-                pin = base + int(item["offset"])
+                channel = base + int(item["offset"])
 
             self.table.setItem(row, 0, QTableWidgetItem(str(kind)))
             self.table.setItem(row, 1, QTableWidgetItem(str(name)))
-            self.table.setItem(row, 2, QTableWidgetItem(str(pin)))
+            self.table.setItem(row, 2, QTableWidgetItem(str(channel)))
             self.table.setItem(row, 3, QTableWidgetItem(str(value1)))
             self.table.setItem(row, 4, QTableWidgetItem(str(value2)))
 
         self.table.blockSignals(False)
         self.completeChanged.emit()
 
-    def apply_pin_base(self):
+    def apply_channel_base(self):
         has_offsets = any("offset" in item for item in self.raw_devices)
 
         if has_offsets:
@@ -174,28 +183,30 @@ class EditIOPage(QWizardPage):
         for row in range(self.table.rowCount()):
             kind = self.table.item(row, 0).text().strip().upper()
             name = self.table.item(row, 1).text().strip()
-            pin = int(self.table.item(row, 2).text().strip())
+            channel = int(self.table.item(row, 2).text().strip())
             value1 = float(self.table.item(row, 3).text().strip())
             value2 = float(self.table.item(row, 4).text().strip())
 
             rows.append({
                 "kind": kind,
                 "name": name,
-                "pin": pin,
+                "channel": channel,
                 "value1": value1,
-                "value2": value2
+                "value2": value2,
+                "can_node": self.can_node.value(),
             })
 
         return rows
 
     def isComplete(self):
-        used_pins = set()
+        used_channels = set()
+        allowed_kinds = {"BUTTON", "SWITCH", "OUTPUT"}
 
         try:
             for row in range(self.table.rowCount()):
                 kind_item = self.table.item(row, 0)
                 name_item = self.table.item(row, 1)
-                pin_item = self.table.item(row, 2)
+                channel_item = self.table.item(row, 2)
 
                 if not kind_item or not kind_item.text().strip():
                     self.warning.setText(f"Falta tipo en fila {row + 1}.")
@@ -205,25 +216,35 @@ class EditIOPage(QWizardPage):
                     self.warning.setText(f"Falta nombre en fila {row + 1}.")
                     return False
 
-                if not pin_item or not pin_item.text().strip():
-                    self.warning.setText(f"Falta pin en fila {row + 1}.")
+                if not channel_item or not channel_item.text().strip():
+                    self.warning.setText(f"Falta canal en fila {row + 1}.")
                     return False
 
-                pin = int(pin_item.text().strip())
+                kind = kind_item.text().strip().upper()
+                channel = int(channel_item.text().strip())
+                can_node = self.can_node.value()
 
-                if pin < 0 or pin > 255:
-                    self.warning.setText(f"Pin fuera de rango en fila {row + 1}.")
+                if kind not in allowed_kinds:
+                    self.warning.setText(
+                        f"Tipo CAN no soportado en fila {row + 1}: {kind}."
+                    )
                     return False
 
-                if pin in used_pins:
-                    self.warning.setText(f"Pin {pin} repetido dentro del módulo.")
+                if channel < 0 or channel > 255:
+                    self.warning.setText(f"Canal fuera de rango en fila {row + 1}.")
                     return False
 
-                used_pins.add(pin)
+                if channel in used_channels:
+                    self.warning.setText(f"Canal {channel} repetido dentro del módulo.")
+                    return False
 
-                if hasattr(self.wizard(), "is_pin_used"):
-                    if self.wizard().is_pin_used(pin):
-                        self.warning.setText(f"El pin {pin} ya está en uso.")
+                used_channels.add(channel)
+
+                if hasattr(self.wizard(), "is_can_used"):
+                    if self.wizard().is_can_used(can_node, channel):
+                        self.warning.setText(
+                            f"El CAN{can_node}:{channel} ya está en uso."
+                        )
                         return False
 
             self.warning.setText("")
@@ -261,12 +282,13 @@ class SummaryPage(QWizardPage):
 
     def initializePage(self):
         rows = self.wizard().page(PAGE_EDIT_IO).get_rows()
+        can_node = self.wizard().page(PAGE_EDIT_IO).can_node.value()
 
-        lines = ["Dispositivos que se añadirán:", ""]
+        lines = [f"Dispositivos CAN que se añadirán al nodo {can_node}:", ""]
 
         for item in rows:
             lines.append(
-                f"{item['kind']:8} pin {item['pin']:3}  "
+                f"{item['kind']:8} CAN{item['can_node']}:{item['channel']:3}  "
                 f"{item['name']}  "
                 f"({item['value1']:g}, {item['value2']:g})"
             )
@@ -278,11 +300,11 @@ class SummaryPage(QWizardPage):
 
 
 class ModuleWizard(QWizard):
-    def __init__(self, devices=None, modules_dir="modules", parent=None):
+    def __init__(self, devices=None, modules_dir=MODULES_DIR, parent=None):
         super().__init__(parent)
 
         self.devices = devices or []
-        self.modules_dir = modules_dir
+        self.modules_dir = Path(modules_dir)
 
         self.setWindowTitle("Asistente de módulo IO")
         self.resize(780, 560)
@@ -302,6 +324,16 @@ class ModuleWizard(QWizard):
     def is_pin_used(self, pin):
         return any(str(device.pin) == str(pin) for device in self.devices)
 
+    def is_can_used(self, node, channel):
+        for device in self.devices:
+            if str(device.kind).upper() != "CANBUS":
+                continue
+            if int(getattr(device, "can_node", -1)) == int(node) and int(
+                getattr(device, "can_channel", -1)
+            ) == int(channel):
+                return True
+        return False
+
     def get_devices(self):
         rows = self.page(PAGE_EDIT_IO).get_rows()
         devices = []
@@ -309,9 +341,12 @@ class ModuleWizard(QWizard):
         for item in rows:
             devices.append(
                 Device(
-                    kind=item["kind"],
-                    pin=item["pin"],
+                    kind="CANBUS",
+                    pin=f"CAN{item['can_node']}:{item['channel']}",
                     name=item["name"],
+                    can_kind=item["kind"],
+                    can_node=item["can_node"],
+                    can_channel=item["channel"],
                     value1=item["value1"],
                     value2=item["value2"],
                 )
