@@ -63,6 +63,18 @@ def build_extra_commands(device):
     commands = []
     kind = normalize_kind(device.kind)
 
+    if kind == "OUTPUT":
+        commands.append(
+            f"CFG {pin_to_text(device.pin)} OUTINV "
+            f"{'ON' if getattr(device, 'output_inverted', False) else 'OFF'}"
+        )
+
+    if kind == "CANBUS" and normalize_kind(getattr(device, "can_kind", "BUTTON")) == "OUTPUT":
+        commands.append(
+            f"CFG CAN{int(getattr(device, 'can_node', 0))}:{int(getattr(device, 'can_channel', 0))} "
+            f"OUTINV {'ON' if getattr(device, 'output_inverted', False) else 'OFF'}"
+        )
+
     if kind == "POT":
         pin = pin_to_text(device.pin)
 

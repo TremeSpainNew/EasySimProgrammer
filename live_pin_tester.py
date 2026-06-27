@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton,
-    QProgressBar, QFrame, QHBoxLayout
+    QProgressBar, QFrame, QHBoxLayout, QCheckBox
 )
 from PySide6.QtCore import QTimer, Qt
 
@@ -13,7 +13,10 @@ class LivePinTester(QWidget):
 
         self.pin = 0
         self.kind = "BUTTON"
+        self.output_name = ""
         self.output_state = 0
+        self.output_inverted = False
+        self.last_output_raw_value = 0
         self.watch_active = False
 
         self.calibrating = False
@@ -40,6 +43,9 @@ class LivePinTester(QWidget):
         self.toggle_button = QPushButton("Probar salida ON/OFF")
         self.toggle_button.clicked.connect(self.toggle_output)
 
+        self.invert_output_check = QCheckBox("Invertir salida en la prueba")
+        self.invert_output_check.toggled.connect(self.on_output_inversion_changed)
+
         self.calibrate_button = QPushButton("Calibrar rango POT")
         self.calibrate_button.clicked.connect(self.toggle_calibration)
 
@@ -56,6 +62,7 @@ class LivePinTester(QWidget):
         layout.addWidget(self.status)
         layout.addWidget(self.indicator, alignment=Qt.AlignCenter)
         layout.addWidget(self.bar)
+        layout.addWidget(self.invert_output_check)
         layout.addLayout(button_row)
 
         self.setLayout(layout)
@@ -98,12 +105,15 @@ class LivePinTester(QWidget):
         }
         return labels.get(self.normalize_kind(kind), str(kind).lower())
 
-    def set_target(self, pin, kind: str):
+    def set_target(self, pin, kind: str, output_name: str = ""):
         self.stop_watch()
 
         self.pin = pin
         self.kind = self.normalize_kind(kind)
+        self.output_name = str(output_name or "").strip()
         self.output_state = 0
+        self.last_output_raw_value = 0
+        self.set_output_inverted(False)
 
         self.calibrating = False
         self.cal_min = None
@@ -119,6 +129,7 @@ class LivePinTester(QWidget):
         self.bar.setVisible(is_pot)
         self.calibrate_button.setVisible(is_pot)
         self.toggle_button.setVisible(is_output)
+        self.invert_output_check.setVisible(is_output)
         self.indicator.setVisible(not is_pot)
 
         if self.connection.simulation:
@@ -184,7 +195,8 @@ class LivePinTester(QWidget):
             return
 
         if self.kind == "OUTPUT":
-            active = bool(value)
+            self.last_output_raw_value = 1 if value else 0
+            active = bool(self.physical_to_logical_output(value))
             self.output_state = 1 if active else 0
             self.status.setText("Salida ON" if active else "Salida OFF")
             self.set_indicator(active)
@@ -222,7 +234,41 @@ class LivePinTester(QWidget):
 
     def toggle_output(self):
         self.output_state = 0 if self.output_state else 1
-        self.connection.write_output(self.pin, self.output_state)
+
+        if self.kind == "OUTPUT" and self.output_name:
+            self.connection.send_command(f"{self.output_name}={self.output_state}")
+            return
+
+        self.connection.write_output(
+            self.pin,
+            self.logical_to_physical_output(self.output_state)
+        )
+
+    def logical_to_physical_output(self, value: int) -> int:
+        value = 1 if value else 0
+        return 1 - value if self.output_inverted else value
+
+    def physical_to_logical_output(self, value: int) -> int:
+        value = 1 if value else 0
+        return 1 - value if self.output_inverted else value
+
+    def on_output_inversion_changed(self, checked: bool):
+        self.output_inverted = bool(checked)
+
+        if self.kind == "OUTPUT":
+            self.update_display(self.last_output_raw_value)
+
+    def set_output_inverted(self, enabled: bool):
+        self.output_inverted = bool(enabled)
+        self.invert_output_check.blockSignals(True)
+        self.invert_output_check.setChecked(self.output_inverted)
+        self.invert_output_check.blockSignals(False)
+
+        if self.kind == "OUTPUT":
+            self.update_display(self.last_output_raw_value)
+
+    def get_output_inverted(self) -> bool:
+        return bool(self.output_inverted)
 
     def toggle_calibration(self):
         self.calibrating = not self.calibrating

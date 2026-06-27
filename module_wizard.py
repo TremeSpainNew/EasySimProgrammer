@@ -186,6 +186,7 @@ class EditIOPage(QWizardPage):
             channel = int(self.table.item(row, 2).text().strip())
             value1 = float(self.table.item(row, 3).text().strip())
             value2 = float(self.table.item(row, 4).text().strip())
+            raw_item = self.raw_devices[row] if row < len(self.raw_devices) else {}
 
             rows.append({
                 "kind": kind,
@@ -194,6 +195,9 @@ class EditIOPage(QWizardPage):
                 "value1": value1,
                 "value2": value2,
                 "can_node": self.can_node.value(),
+                "output_inverted": bool(
+                    raw_item.get("output_inverted", raw_item.get("inverted", False))
+                ),
             })
 
         return rows
@@ -347,6 +351,7 @@ class ModuleWizard(QWizard):
                     can_kind=item["kind"],
                     can_node=item["can_node"],
                     can_channel=item["channel"],
+                    output_inverted=bool(item.get("output_inverted", False)),
                     value1=item["value1"],
                     value2=item["value2"],
                 )

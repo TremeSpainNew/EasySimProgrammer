@@ -20,6 +20,9 @@ class ManualConsole(QDialog):
         self.log.setReadOnly(True)
 
         self.command = QLineEdit()
+        self.command.setPlaceholderText(
+            "Ej: #DUMP, CFG ALL OUTINV ON, CFG 12 OUTINV OFF..."
+        )
         self.command.returnPressed.connect(self.send_command)
 
         self.send_button = QPushButton("Enviar")

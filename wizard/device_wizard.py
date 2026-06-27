@@ -259,6 +259,8 @@ class BasicPage(QWizardPage):
             return PAGE_SELECTOR
 
         if kind == "CANBUS":
+            if str(self.get_can_kind()).upper() == "OUTPUT":
+                return PAGE_OPTIONS
             return PAGE_SUMMARY
 
         return PAGE_TEST
@@ -288,13 +290,29 @@ class TestPage(QWizardPage):
     def initializePage(self):
         wizard = self.wizard()
         kind = wizard.page(PAGE_TYPE).current_kind()
-        pin_token = wizard.page(PAGE_BASIC).get_pin_token()
+        basic_page = wizard.page(PAGE_BASIC)
+        pin_token = basic_page.get_pin_token()
+        output_name = basic_page.get_name()
 
         if kind == "CANBUS":
             self.tester.stop()
             return
 
-        self.tester.set_target(pin_token, kind)
+        self.tester.set_target(pin_token, kind, output_name=output_name)
+
+        if kind == "OUTPUT":
+            device = getattr(wizard, "existing_device", None)
+            options = wizard.page(PAGE_OPTIONS)
+            output_seed_key = (kind, "", str(pin_token))
+
+            if options._output_seed_key == output_seed_key:
+                inverted = options.output_inverted.isChecked()
+            elif device and str(device.kind).upper() == "OUTPUT":
+                inverted = bool(getattr(device, "output_inverted", False))
+            else:
+                inverted = False
+
+            self.tester.set_output_inverted(inverted)
 
     def cleanupPage(self):
         self.stop_tester()
@@ -304,6 +322,9 @@ class TestPage(QWizardPage):
 
     def get_calibration(self):
         return self.tester.get_calibration()
+
+    def get_output_inverted(self):
+        return self.tester.get_output_inverted()
 
     def nextId(self):
         return PAGE_OPTIONS
@@ -373,6 +394,9 @@ class OptionsPage(QWizardPage):
 
         self.as_integer = QCheckBox("Enviar como entero")
         self.as_integer.setChecked(True)
+
+        self.output_inverted = QCheckBox("Invertir estado de salida")
+        self.output_inverted.setChecked(False)
 
         self.enable_notches = QCheckBox("Usar muescas / posiciones fijas")
         self.enable_notches.setChecked(False)
@@ -452,6 +476,7 @@ class OptionsPage(QWizardPage):
         self.form.addRow("Modo envío:", self.send_mode)
         self.form.addRow("Intervalo:", self.interval)
         self.form.addRow("", self.as_integer)
+        self.form.addRow("", self.output_inverted)
         self.form.addRow("", self.enable_notches)
         self.form.addRow("", self.live_value_label)
         self.form.addRow("Nº muescas:", self.notch_count)
@@ -469,12 +494,18 @@ class OptionsPage(QWizardPage):
 
         self.setLayout(self.form)
         self._prefilled = False
+        self._output_seed_key = None
 
     def initializePage(self):
         wizard = self.wizard()
         kind = wizard.page(PAGE_TYPE).current_kind()
+        basic = wizard.page(PAGE_BASIC)
 
         is_pot = kind == "POT"
+        is_output = kind == "OUTPUT" or (
+            kind == "CANBUS" and str(basic.get_can_kind()).upper() == "OUTPUT"
+        )
+        is_can_output = kind == "CANBUS" and str(basic.get_can_kind()).upper() == "OUTPUT"
         device = getattr(wizard, "existing_device", None)
 
         if is_pot and device and not self._prefilled and str(device.kind).upper() == "POT":
@@ -517,6 +548,30 @@ class OptionsPage(QWizardPage):
 
         test_page = wizard.page(PAGE_TEST)
         cal_min, cal_max = test_page.get_calibration()
+
+        if is_output:
+            output_seed_key = (
+                kind,
+                str(basic.get_can_kind()).upper() if kind == "CANBUS" else "",
+                str(basic.get_pin_token()),
+            )
+
+            if self._output_seed_key != output_seed_key:
+                if device and (
+                    str(device.kind).upper() == "OUTPUT"
+                    or (
+                        str(device.kind).upper() == "CANBUS"
+                        and str(getattr(device, "can_kind", "")).upper() == "OUTPUT"
+                    )
+                ):
+                    inverted = bool(getattr(device, "output_inverted", False))
+                else:
+                    inverted = bool(test_page.get_output_inverted())
+
+                self.output_inverted.setChecked(inverted)
+                self._output_seed_key = output_seed_key
+        else:
+            self._output_seed_key = None
 
         if is_pot and cal_min is not None and cal_max is not None and not self._prefilled:
             self.min_in.setValue(int(cal_min))
@@ -579,13 +634,16 @@ class OptionsPage(QWizardPage):
 
             elif text in rows_for_normal:
                 if label:
-                    label.setVisible(not is_pot)
+                    label.setVisible(not is_pot and not is_can_output)
                 if field:
-                    field.setVisible(not is_pot)
+                    field.setVisible(not is_pot and not is_can_output)
 
             else:
                 if field == self.as_integer:
                     field.setVisible(is_pot)
+
+                elif field == self.output_inverted:
+                    field.setVisible(is_output)
 
                 elif field == self.enable_notches:
                     field.setVisible(is_pot)
@@ -961,6 +1019,9 @@ class SummaryPage(QWizardPage):
                 f"Nombre: {basic.get_name()}",
             ]
 
+            if str(basic.get_can_kind()).upper() == "OUTPUT":
+                lines.append(f"Invertida: {'SI' if options.output_inverted.isChecked() else 'NO'}")
+
             self.label.setText("\n".join(lines))
             return
 
@@ -1014,6 +1075,9 @@ class SummaryPage(QWizardPage):
             f"Valor 1: {options.value1.value()}\n"
             f"Valor 2: {options.value2.value()}"
         )
+
+        if kind == "OUTPUT":
+            text += f"\nInvertida: {'SI' if options.output_inverted.isChecked() else 'NO'}"
 
         self.label.setText(text)
 
@@ -1175,6 +1239,7 @@ class DeviceWizard(QWizard):
             return devices
 
         if kind == "CANBUS":
+            options = self.page(PAGE_OPTIONS)
             return [
                 Device(
                     kind="CANBUS",
@@ -1183,6 +1248,11 @@ class DeviceWizard(QWizard):
                     can_kind=basic.get_can_kind(),
                     can_node=basic.can_node.value(),
                     can_channel=basic.can_channel.value(),
+                    output_inverted=(
+                        options.output_inverted.isChecked()
+                        if str(basic.get_can_kind()).upper() == "OUTPUT"
+                        else False
+                    ),
                     value1=0,
                     value2=1,
                 )
@@ -1207,6 +1277,7 @@ class DeviceWizard(QWizard):
             send_mode=options.send_mode.currentText(),
             interval=options.interval.value(),
             as_integer=options.as_integer.isChecked(),
+            output_inverted=options.output_inverted.isChecked() if kind == "OUTPUT" else False,
             pot_threshold=options.threshold.value(),
             pot_notches_enabled=options.enable_notches.isChecked() if kind == "POT" else False,
             pot_notches=options.get_notches() if kind == "POT" else [],

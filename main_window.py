@@ -329,6 +329,79 @@ class MainWindow(QMainWindow):
 
         return selector_rows
 
+    def is_testable_output(self, device):
+        if not device:
+            return False
+
+        if device.kind == "OUTPUT":
+            return True
+
+        return (
+            device.kind == "CANBUS"
+            and str(getattr(device, "can_kind", "")).upper() == "OUTPUT"
+        )
+
+    def send_test_output_value(self, device, value):
+        value = 1 if value else 0
+
+        if device.kind == "OUTPUT":
+            if getattr(device, "name", ""):
+                command = f"{device.name}={value}"
+                self.connection.send_command(command)
+                self.add_log(
+                    f"Prueba salida {device.name} (pin {device.pin}) = {value}"
+                )
+            else:
+                self.connection.write_output(device.pin, value)
+                self.add_log(
+                    f"Prueba salida directa pin {device.pin} = {value}"
+                )
+            return
+
+        if device.kind == "CANBUS" and str(getattr(device, "can_kind", "")).upper() == "OUTPUT":
+            command = f"{device.name}={value}"
+            self.connection.send_command(command)
+            self.add_log(f"Prueba salida CAN {device.name} ({device.pin}) = {value}")
+            return
+
+    def build_action_widget(self, kind, device):
+        panel = QWidget()
+        layout = QHBoxLayout()
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(6)
+
+        if self.is_testable_output(device):
+            btn_test = QPushButton("Test")
+            btn_test.setToolTip("Mantener pulsado para activar la salida")
+            btn_test.setStyleSheet(
+                "background-color: #2e8b57;"
+                "color: white;"
+                "border-radius: 4px;"
+                "padding: 2px 8px;"
+                "font-weight: bold;"
+            )
+            btn_test.pressed.connect(lambda d=device: self.send_test_output_value(d, 1))
+            btn_test.released.connect(lambda d=device: self.send_test_output_value(d, 0))
+            layout.addWidget(btn_test)
+
+        btn_delete = QPushButton("✖")
+        btn_delete.setToolTip(
+            "Eliminar selector completo" if kind == "SELECTOR" else "Eliminar este elemento"
+        )
+        btn_delete.setStyleSheet(
+            "background-color: #c0392b;"
+            "color: white;"
+            "border-radius: 4px;"
+            "padding: 2px;"
+            "font-weight: bold;"
+        )
+        btn_delete.clicked.connect(lambda _, d=device: self.delete_device(d))
+        layout.addWidget(btn_delete)
+        layout.addStretch()
+
+        panel.setLayout(layout)
+        return panel
+
     def describe_selector_group(self, device):
         selector_devices = sorted(
             self.get_selector_group(device),
@@ -446,9 +519,52 @@ class MainWindow(QMainWindow):
             return
 
         if not self.dump_active:
+            self.apply_runtime_cfg_feedback(line)
             return
 
         self.parse_dump_line(line)
+
+    def apply_runtime_cfg_feedback(self, line: str):
+        parts = line.split()
+        if len(parts) < 5:
+            return
+
+        if parts[0].upper() != "OK" or parts[1].upper() != "CFG":
+            return
+
+        if parts[3].upper() != "OUTINV":
+            return
+
+        enabled = parts[4].upper() in ("ON", "TRUE", "1")
+        target = parts[2].upper()
+        changed = False
+
+        if target == "ALL":
+            for device in self.devices:
+                if device.kind == "OUTPUT":
+                    device.output_inverted = enabled
+                    changed = True
+                elif (
+                    device.kind == "CANBUS"
+                    and str(getattr(device, "can_kind", "")).upper() == "OUTPUT"
+                ):
+                    device.output_inverted = enabled
+                    changed = True
+        else:
+            for device in self.devices:
+                if device.kind == "OUTPUT" and str(device.pin).upper() == target:
+                    device.output_inverted = enabled
+                    changed = True
+                elif (
+                    device.kind == "CANBUS"
+                    and str(getattr(device, "can_kind", "")).upper() == "OUTPUT"
+                    and f"CAN{int(getattr(device, 'can_node', 0))}:{int(getattr(device, 'can_channel', 0))}" == target
+                ):
+                    device.output_inverted = enabled
+                    changed = True
+
+        if changed:
+            self.refresh_tables()
 
     def parse_dump_line(self, line: str):
         parts = line.split()
@@ -564,6 +680,13 @@ class MainWindow(QMainWindow):
 
         field = parts[2].upper()
 
+        if field == "OUTINV" and len(parts) >= 4:
+            device = self.get_dump_output_device(pin)
+            if device is None:
+                return
+            device.output_inverted = parts[3].upper() in ("ON", "TRUE", "1")
+            return
+
         device = self.get_dump_pot_device(pin)
         if device is None:
             return
@@ -596,6 +719,18 @@ class MainWindow(QMainWindow):
     def get_dump_pot_device(self, pin):
         for dev in self.dump_devices.values():
             if dev.kind == "POT" and dev.pin == pin:
+                return dev
+        return None
+
+    def get_dump_output_device(self, pin):
+        for dev in self.dump_devices.values():
+            if dev.kind == "OUTPUT" and dev.pin == pin:
+                return dev
+            if (
+                dev.kind == "CANBUS"
+                and str(getattr(dev, "can_kind", "")).upper() == "OUTPUT"
+                and str(dev.pin) == str(pin)
+            ):
                 return dev
         return None
 
@@ -893,20 +1028,7 @@ class MainWindow(QMainWindow):
                     table.setItem(row, 4, QTableWidgetItem(device.send_mode))
                     table.setItem(row, 5, QTableWidgetItem(self.describe_options(device)))
 
-                btn_delete = QPushButton("✖")
-                btn_delete.setToolTip(
-                    "Eliminar selector completo" if kind == "SELECTOR" else "Eliminar este elemento"
-                )
-                btn_delete.setStyleSheet(
-                    "background-color: #c0392b;"
-                    "color: white;"
-                    "border-radius: 4px;"
-                    "padding: 2px;"
-                    "font-weight: bold;"
-                )
-                btn_delete.clicked.connect(lambda _, d=device: self.delete_device(d))
-
-                table.setCellWidget(row, 6, btn_delete)
+                table.setCellWidget(row, 6, self.build_action_widget(kind, device))
 
     def describe_options(self, device):
         if device.kind == "POT":
@@ -934,11 +1056,20 @@ class MainWindow(QMainWindow):
             return f"Posición selector = {device.value1:g}"
 
         if device.kind == "CANBUS":
-            return (
+            text = (
                 f"subtipo={getattr(device, 'can_kind', 'BUTTON')}, "
                 f"nodo={getattr(device, 'can_node', 0)}, "
                 f"canal={getattr(device, 'can_channel', 0)}"
             )
+            if (
+                str(getattr(device, "can_kind", "")).upper() == "OUTPUT"
+                and getattr(device, "output_inverted", False)
+            ):
+                text += ", invertida=ON"
+            return text
+
+        if device.kind == "OUTPUT" and getattr(device, "output_inverted", False):
+            return "invertida=ON"
 
         return ""
 

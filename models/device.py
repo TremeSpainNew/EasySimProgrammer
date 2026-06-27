@@ -81,6 +81,7 @@ class Device:
     can_kind: str = "BUTTON"
     can_node: int = 0
     can_channel: int = 0
+    output_inverted: bool = False
 
     value1: float = 0
     value2: float = 1
@@ -131,6 +132,7 @@ class Device:
             can_kind=can_kind,
             can_node=can_node,
             can_channel=can_channel,
+            output_inverted=bool(data.get("output_inverted", False)),
 
             value1=float(data.get("value1", 0)),
             value2=float(data.get("value2", 1)),
