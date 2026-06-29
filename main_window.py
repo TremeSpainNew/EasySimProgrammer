@@ -18,6 +18,7 @@ from module_wizard import ModuleWizard
 from manual_console import ManualConsole
 from widgets.serial_port_combobox import SerialPortComboBox
 from parameter_catalog import ParameterCatalog
+from bluetooth_ota import BluetoothOtaDialog
 
 
 class MainWindow(QMainWindow):
@@ -82,6 +83,7 @@ class MainWindow(QMainWindow):
         self.btn_send = QPushButton("Enviar comandos")
         self.btn_dump = QPushButton("#DUMP")
         self.btn_manual = QPushButton("Consola manual")
+        self.btn_ble_ota = QPushButton("OTA Bluetooth")
 
         self.btn_add.clicked.connect(self.add_device)
         self.btn_add_module.clicked.connect(self.open_module_wizard)
@@ -93,6 +95,7 @@ class MainWindow(QMainWindow):
         self.btn_send.clicked.connect(self.send_commands)
         self.btn_dump.clicked.connect(self.request_dump)
         self.btn_manual.clicked.connect(self.open_console)
+        self.btn_ble_ota.clicked.connect(self.open_ble_ota)
 
         self.sim_check = QCheckBox("Simulación")
         self.sim_check.setChecked(False)
@@ -171,6 +174,7 @@ class MainWindow(QMainWindow):
         button_row.addWidget(self.btn_edit)
         button_row.addWidget(self.btn_delete)
         button_row.addWidget(self.btn_manual)
+        button_row.addWidget(self.btn_ble_ota)
         button_row.addStretch()
         button_row.addWidget(self.btn_dump)
         button_row.addWidget(self.btn_load)
@@ -213,6 +217,10 @@ class MainWindow(QMainWindow):
         action_open_catalog = QAction("Abrir catálogo de controles JSON...", self)
         action_open_catalog.triggered.connect(self.open_parameter_catalog)
         file_menu.addAction(action_open_catalog)
+
+        action_ble_ota = QAction("OTA por Bluetooth...", self)
+        action_ble_ota.triggered.connect(self.open_ble_ota)
+        file_menu.addAction(action_ble_ota)
 
     def open_parameter_catalog(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -1339,6 +1347,10 @@ class MainWindow(QMainWindow):
 
     def open_console(self):
         dlg = ManualConsole(self.connection, self)
+        dlg.exec()
+
+    def open_ble_ota(self):
+        dlg = BluetoothOtaDialog(self)
         dlg.exec()
 
     def closeEvent(self, event):

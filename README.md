@@ -17,5 +17,10 @@ Incluye:
 - Simulación.
 - TCP básico.
 - Serial básico.
+- OTA por Bluetooth BLE.
 - Guardar/cargar JSON.
 - Generar/enviar comandos.
+
+Dependencias nuevas:
+
+- `bleak` para descubrir el dispositivo `EASYSIM-OTA` y enviar el firmware por BLE.
